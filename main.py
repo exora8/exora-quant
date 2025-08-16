@@ -22,7 +22,7 @@
 #    python app.py
 #
 # 3. Access the application in your browser:
-#    http://127.0.0.1:5000
+#    http://12.0.0.1:5000
 # ==============================================================================
 
 import time
@@ -42,7 +42,7 @@ cache = {}
 
 
 # --- HTML & JavaScript Template ---
-# This single string contains the entire frontend code. It has not been changed.
+# This single string contains the entire frontend code.
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -61,7 +61,7 @@ HTML_TEMPLATE = """
             position: absolute; top: 15px; left: 15px; z-index: 100;
             background-color: rgba(25, 25, 25, 0.85); backdrop-filter: blur(5px);
             padding: 12px; border-radius: 8px; border: 1px solid #333;
-            display: flex; align-items: center; gap: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            display: flex; flex-wrap: wrap; align-items: center; gap: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
         }
         .controls-overlay label { color: #ccc; font-size: 14px; }
         .controls-overlay select, .controls-overlay input, .controls-overlay button {
@@ -77,8 +77,6 @@ HTML_TEMPLATE = """
         .controls-overlay button { background-color: #007bff; border-color: #007bff; font-weight: bold; }
         .controls-overlay button:hover { background-color: #0056b3; border-color: #0056b3; }
         #status { margin-left: 15px; color: #ffeb3b; font-size: 14px; min-width: 250px; }
-
-        /* --- Position Simulation Modal --- */
         #position-modal {
             display: none; position: absolute; top: 50%; left: 50%;
             transform: translate(-50%, -50%); z-index: 200;
@@ -91,6 +89,21 @@ HTML_TEMPLATE = """
         .modal-content h3 { grid-column: 1 / -1; margin: 0 0 10px; text-align: center; }
         .modal-content input[type="number"], .modal-content .radio-group { width: 100%; box-sizing: border-box; }
         .modal-buttons { grid-column: 1 / -1; display: flex; justify-content: space-between; margin-top: 15px; }
+
+        /* --- NEW: Responsive styles for mobile screens --- */
+        @media (max-width: 768px) {
+            .controls-overlay {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 10px;
+                top: 10px; left: 10px; right: 10px;
+            }
+            .controls-overlay input, .controls-overlay select, .controls-overlay button {
+                width: 100%;
+                box-sizing: border-box; /* Ensures padding is included in the width */
+            }
+            #status { margin-left: 0; margin-top: 5px; text-align: center; }
+        }
     </style>
     <!-- amCharts 5 CDN -->
     <script src="https://cdn.amcharts.com/lib/5/index.js"></script>
@@ -117,7 +130,6 @@ HTML_TEMPLATE = """
         <div id="status"></div>
     </div>
 
-    <!-- Position Simulation Modal HTML -->
     <div id="position-modal">
         <div class="modal-content">
             <h3>Simulate Position</h3>
@@ -159,7 +171,9 @@ HTML_TEMPLATE = """
                     panX: true, panY: false, wheelX: "panX", wheelY: "zoomX", pinchZoomX: true
                 }));
                 
-                const cursor = chart.set("cursor", am5xy.XYCursor.new(root, { behavior: "zoomX" }));
+                // --- MODIFIED: Changed cursor behavior from "zoomX" to "panX" ---
+                // Now click-and-drag will pan the chart left/right. Zoom is on mouse-wheel.
+                const cursor = chart.set("cursor", am5xy.XYCursor.new(root, { behavior: "panX" }));
                 cursor.lineY.set("visible", false);
                 
                 xAxis = chart.xAxes.push(am5xy.DateAxis.new(root, {
@@ -294,7 +308,7 @@ def get_bybit_data(symbol, interval):
     except requests.exceptions.RequestException as e: raise ConnectionError(f"Failed to connect to Bybit API: {e}")
     except (ValueError, KeyError) as e: raise ValueError(f"Error processing Bybit response: {e}")
 
-# --- NEW: Prediction Model (Pure Python) ---
+# --- Prediction Model (Pure Python) ---
 def find_similar_patterns_pure_python(data_series, window_size=20, top_n=5):
     """
     Finds historical patterns similar to the most recent one using cosine similarity.
@@ -302,7 +316,6 @@ def find_similar_patterns_pure_python(data_series, window_size=20, top_n=5):
     """
     if len(data_series) < 2 * window_size: return None
 
-    # Helper functions for vector math
     def dot_product(v1, v2):
         return sum(x * y for x, y in zip(v1, v2))
 
@@ -314,39 +327,31 @@ def find_similar_patterns_pure_python(data_series, window_size=20, top_n=5):
     if current_norm == 0: return None
 
     similarities = []
-    # Create historical patterns using a sliding window
     for i in range(len(data_series) - window_size):
         historical_pattern = data_series[i : i + window_size]
         historical_norm = norm(historical_pattern)
         if historical_norm > 0:
             similarity = dot_product(historical_pattern, current_pattern) / (historical_norm * current_norm)
-            # Store similarity and the index of the *next* candle's return
             similarities.append({"sim": similarity, "outcome_index": i + window_size})
 
     if not similarities: return None
     
-    # Sort by similarity and get the top N
     similarities.sort(key=lambda x: x["sim"], reverse=True)
     top_patterns = similarities[:top_n]
 
     if not top_patterns: return None
 
-    # Calculate the average outcome from the candles that followed the most similar patterns
     avg_outcome = statistics.mean(data_series[p["outcome_index"]] for p in top_patterns)
     return avg_outcome
 
 def predict_next_candles(candles_data, num_predictions=5):
     """
     Trains a simplified model and predicts the next N candles using pure Python.
-    The prediction is based on historical pattern matching (cosine similarity).
     """
     if len(candles_data) < 50: return []
 
-    # Convert raw string data to a list of lists of floats
-    # [timestamp, open, high, low, close, volume]
     data = [[float(c[i]) for i in range(6)] for c in candles_data]
     
-    # Calculate average wick sizes for generating predicted candles
     upper_wicks = [d[2] - max(d[1], d[4]) for d in data]
     lower_wicks = [min(d[1], d[4]) - d[3] for d in data]
     avg_upper_wick = statistics.mean(upper_wicks) if upper_wicks else 0
@@ -358,7 +363,6 @@ def predict_next_candles(candles_data, num_predictions=5):
     for i in range(num_predictions):
         closes = [c[4] for c in current_candles]
         
-        # Calculate log returns of closing prices
         log_returns_close = []
         for j in range(1, len(closes)):
             if closes[j-1] > 0:
@@ -366,7 +370,6 @@ def predict_next_candles(candles_data, num_predictions=5):
         
         if not log_returns_close: break
 
-        # Find similar patterns and get the predicted next log return
         predicted_log_return = find_similar_patterns_pure_python(log_returns_close)
         
         if predicted_log_return is None: break
@@ -382,7 +385,6 @@ def predict_next_candles(candles_data, num_predictions=5):
         interval_ms = int(current_candles[-1][0]) - int(current_candles[-2][0])
         new_ts = last_ts + interval_ms
         
-        # Add the new predicted candle to the list for the next iteration
         new_candle = [new_ts, pred_open, pred_high, pred_low, predicted_close, 0]
         current_candles.append(new_candle)
 
