@@ -22,7 +22,7 @@
 #    python app.py
 #
 # 3. Access the application in your browser:
-#    http://12.0.0.1:5000
+#    http://127.0.0.1:5000
 # ==============================================================================
 
 import time
@@ -57,12 +57,35 @@ HTML_TEMPLATE = """
             background-color: #000;
         }
         #chartdiv { width: 100%; height: 100%; }
-        .controls-overlay {
+        
+        /* --- MODIFIED: Wrapper for controls and toggle button --- */
+        #controls-wrapper {
             position: absolute; top: 15px; left: 15px; z-index: 100;
+            display: flex; align-items: flex-start; gap: 10px;
+        }
+
+        /* --- NEW: Style for the toggle button --- */
+        #toggle-controls-btn {
+            width: 40px; height: 40px; padding: 0; font-size: 20px;
+            border-radius: 8px; border: 1px solid #444; background-color: rgba(25, 25, 25, 0.85);
+            color: #eee; cursor: pointer; backdrop-filter: blur(5px);
+            display: flex; align-items: center; justify-content: center;
+        }
+
+        .controls-overlay {
             background-color: rgba(25, 25, 25, 0.85); backdrop-filter: blur(5px);
             padding: 12px; border-radius: 8px; border: 1px solid #333;
             display: flex; flex-wrap: wrap; align-items: center; gap: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            /* --- NEW: Transition for smooth hide/show --- */
+            transition: transform 0.3s ease-in-out, opacity 0.3s ease-in-out;
         }
+        /* --- NEW: Hidden state for the overlay --- */
+        .controls-overlay.hidden {
+            transform: translateX(calc(-100% - 20px));
+            opacity: 0;
+            pointer-events: none;
+        }
+
         .controls-overlay label { color: #ccc; font-size: 14px; }
         .controls-overlay select, .controls-overlay input, .controls-overlay button {
             padding: 8px 12px; border-radius: 5px; border: 1px solid #444;
@@ -90,17 +113,15 @@ HTML_TEMPLATE = """
         .modal-content input[type="number"], .modal-content .radio-group { width: 100%; box-sizing: border-box; }
         .modal-buttons { grid-column: 1 / -1; display: flex; justify-content: space-between; margin-top: 15px; }
 
-        /* --- NEW: Responsive styles for mobile screens --- */
         @media (max-width: 768px) {
+            #controls-wrapper { top: 10px; left: 10px; right: 10px; }
             .controls-overlay {
-                flex-direction: column;
-                align-items: stretch;
-                gap: 10px;
-                top: 10px; left: 10px; right: 10px;
+                flex-direction: column; align-items: stretch; gap: 10px;
+                /* --- MODIFIED: Ensure overlay expands in mobile view --- */
+                flex-grow: 1;
             }
             .controls-overlay input, .controls-overlay select, .controls-overlay button {
-                width: 100%;
-                box-sizing: border-box; /* Ensures padding is included in the width */
+                width: 100%; box-sizing: border-box;
             }
             #status { margin-left: 0; margin-top: 5px; text-align: center; }
         }
@@ -114,20 +135,24 @@ HTML_TEMPLATE = """
 <body>
     <div id="chartdiv"></div>
 
-    <div class="controls-overlay">
-        <label for="symbol">Symbol:</label>
-        <input type="text" id="symbol" value="BTCUSDT" placeholder="e.g., BTCUSDT">
-        <label for="interval">Timeframe:</label>
-        <select id="interval">
-            <option value="1">1 minute</option> <option value="5">5 minutes</option>
-            <option value="15" selected>15 minutes</option> <option value="30">30 minutes</option>
-            <option value="60">1 hour</option> <option value="240">4 hours</option>
-            <option value="D">Daily</option> <option value="W">Weekly</option>
-        </select>
-        <label for="num_predictions">Predictions:</label>
-        <input type="number" id="num_predictions" value="5" min="1" max="20">
-        <button id="fetchButton">Fetch & Predict</button>
-        <div id="status"></div>
+    <!-- --- MODIFIED: New wrapper and toggle button added --- -->
+    <div id="controls-wrapper">
+        <button id="toggle-controls-btn" title="Toggle Controls">☰</button>
+        <div class="controls-overlay">
+            <label for="symbol">Symbol:</label>
+            <input type="text" id="symbol" value="BTCUSDT" placeholder="e.g., BTCUSDT">
+            <label for="interval">Timeframe:</label>
+            <select id="interval">
+                <option value="1">1 minute</option> <option value="5">5 minutes</option>
+                <option value="15" selected>15 minutes</option> <option value="30">30 minutes</option>
+                <option value="60">1 hour</option> <option value="240">4 hours</option>
+                <option value="D">Daily</option> <option value="W">Weekly</option>
+            </select>
+            <label for="num_predictions">Predictions:</label>
+            <input type="number" id="num_predictions" value="5" min="1" max="20">
+            <button id="fetchButton">Fetch & Predict</button>
+            <div id="status"></div>
+        </div>
     </div>
 
     <div id="position-modal">
@@ -158,6 +183,11 @@ HTML_TEMPLATE = """
             const symbolInput = document.getElementById('symbol');
             const positionModal = document.getElementById('position-modal');
             const entryPriceInput = document.getElementById('entry-price');
+            
+            // --- NEW: Elements for toggling controls ---
+            const toggleBtn = document.getElementById('toggle-controls-btn');
+            const controlsOverlay = document.querySelector('.controls-overlay');
+
             let selectedCandleTimestamp = null;
             let positionRanges = [];
             let root, chart, xAxis, yAxis, series, predictedSeries;
@@ -171,8 +201,6 @@ HTML_TEMPLATE = """
                     panX: true, panY: false, wheelX: "panX", wheelY: "zoomX", pinchZoomX: true
                 }));
                 
-                // --- MODIFIED: Changed cursor behavior from "zoomX" to "panX" ---
-                // Now click-and-drag will pan the chart left/right. Zoom is on mouse-wheel.
                 const cursor = chart.set("cursor", am5xy.XYCursor.new(root, { behavior: "panX" }));
                 cursor.lineY.set("visible", false);
                 
@@ -262,6 +290,11 @@ HTML_TEMPLATE = """
                 }
             }
             
+            // --- NEW: Event listener for the control panel toggle button ---
+            toggleBtn.addEventListener('click', () => {
+                controlsOverlay.classList.toggle('hidden');
+            });
+
             document.getElementById('set-position-btn').addEventListener('click', () => {
                 const entryPrice = parseFloat(entryPriceInput.value);
                 const tpPercent = parseFloat(document.getElementById('tp-percent').value);
