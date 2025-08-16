@@ -1,5 +1,5 @@
 # ==============================================================================
-# Candlestick Chart with AI Prediction (Flask, amCharts5, numpy)
+# Candlestick Chart with AI Prediction (Flask, amCharts5) - PURE PYTHON VERSION
 # ==============================================================================
 # This single-file Python project runs a Flask web server to display a
 # candlestick chart with AI-predicted future candles.
@@ -7,46 +7,42 @@
 # Core Libraries:
 # - Flask: Web server framework.
 # - requests: To fetch data from the Bybit API.
-# - numpy: For all numerical operations and machine learning models.
+# - math, statistics: Standard libraries for numerical operations.
 #
 # Prohibited Libraries (as per requirements):
+# - numpy: NOT USED. All numerical/statistical code is pure Python.
 # - pandas: Not used for data manipulation.
 # - scikit-learn: Not used for machine learning models.
 #
 # How to Run:
 # 1. Install dependencies:
-#    pip install Flask requests numpy
+#    pip install Flask requests
 #
 # 2. Run the Flask development server:
 #    python app.py
 #
 # 3. Access the application in your browser:
 #    http://127.0.0.1:5000
-#
-# For Production (Optional):
-#   gunicorn --workers 4 --bind 0.0.0.0:5000 app:app
 # ==============================================================================
 
 import time
 import requests
-import numpy as np
+import math
+import statistics
 from flask import Flask, jsonify, render_template_string, request
 
 # --- Configuration ---
-# Whitelist of allowed intervals to prevent abuse.
 ALLOWED_INTERVALS = ["1", "3", "5", "15", "30", "60", "120", "240", "360", "720", "D", "W", "M"]
 BYBIT_API_URL = "https://api.bybit.com/v5/market/kline"
-CACHE_TTL_SECONDS = 15  # Cache API responses for 15 seconds
+CACHE_TTL_SECONDS = 15
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
-# Simple in-memory cache: {cache_key: (timestamp, data)}
 cache = {}
 
 
 # --- HTML & JavaScript Template ---
-# This single string contains the entire frontend code, including HTML, CSS,
-# and JavaScript for fetching data and rendering the amCharts5 chart.
+# This single string contains the entire frontend code. It has not been changed.
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -82,7 +78,7 @@ HTML_TEMPLATE = """
         .controls-overlay button:hover { background-color: #0056b3; border-color: #0056b3; }
         #status { margin-left: 15px; color: #ffeb3b; font-size: 14px; min-width: 250px; }
 
-        /* --- NEW: Position Simulation Modal --- */
+        /* --- Position Simulation Modal --- */
         #position-modal {
             display: none; position: absolute; top: 50%; left: 50%;
             transform: translate(-50%, -50%); z-index: 200;
@@ -121,7 +117,7 @@ HTML_TEMPLATE = """
         <div id="status"></div>
     </div>
 
-    <!-- --- NEW: Position Simulation Modal HTML --- -->
+    <!-- Position Simulation Modal HTML -->
     <div id="position-modal">
         <div class="modal-content">
             <h3>Simulate Position</h3>
@@ -148,13 +144,10 @@ HTML_TEMPLATE = """
             const statusEl = document.getElementById('status');
             const fetchButton = document.getElementById('fetchButton');
             const symbolInput = document.getElementById('symbol');
-            
-            // --- NEW: Modal elements and state ---
             const positionModal = document.getElementById('position-modal');
             const entryPriceInput = document.getElementById('entry-price');
             let selectedCandleTimestamp = null;
             let positionRanges = [];
-
             let root, chart, xAxis, yAxis, series, predictedSeries;
 
             function createChart() {
@@ -186,12 +179,11 @@ HTML_TEMPLATE = """
                     tooltip: am5.Tooltip.new(root, { labelText: "Source: Real\\nOpen: {openValueY}\\nHigh: {highValueY}\\nLow: {lowValueY}\\nClose: {valueY}" })
                 }));
 
-                // --- NEW: Add click event to candles to open the simulation modal ---
                 series.columns.template.events.on("click", function(ev) {
                     const dataItem = ev.target.dataItem;
                     if (dataItem) {
                         selectedCandleTimestamp = dataItem.get("valueX");
-                        entryPriceInput.value = dataItem.get("valueY"); // Pre-fill with close price
+                        entryPriceInput.value = dataItem.get("valueY");
                         positionModal.classList.add("visible");
                     }
                 });
@@ -207,31 +199,21 @@ HTML_TEMPLATE = """
                 chart.appear(1000, 100);
             }
             
-            // --- NEW: Function to draw the position lines on the chart ---
             function drawPositionOnChart(entryPrice, tpPrice, slPrice, direction, startTime) {
-                // Clear any previous position lines
                 positionRanges.forEach(range => range.dispose());
                 positionRanges = [];
-
-                // Create Entry line
                 const entryRange = yAxis.createAxisRange(yAxis.makeDataItem({ value: entryPrice }));
                 entryRange.get("grid").setAll({ stroke: am5.color(0x0099ff), strokeWidth: 2, strokeOpacity: 1, strokeDasharray: [3, 3] });
                 entryRange.get("label").setAll({ text: "Entry", fill: am5.color(0x0099ff), location: 0, inside: true, align: "right", dx: 60 });
                 positionRanges.push(entryRange);
-
-                // Create TP line
                 const tpRange = yAxis.createAxisRange(yAxis.makeDataItem({ value: tpPrice }));
                 tpRange.get("grid").setAll({ stroke: am5.color(0x00c782), strokeWidth: 2, strokeOpacity: 1 });
                 tpRange.get("label").setAll({ text: "TP", fill: am5.color(0x00c782), location: 0, inside: true, align: "right", dx: 30 });
                 positionRanges.push(tpRange);
-
-                // Create SL line
                 const slRange = yAxis.createAxisRange(yAxis.makeDataItem({ value: slPrice }));
                 slRange.get("grid").setAll({ stroke: am5.color(0xf34a4a), strokeWidth: 2, strokeOpacity: 1 });
                 slRange.get("label").setAll({ text: "SL", fill: am5.color(0xf34a4a), location: 0, inside: true, align: "right" });
                 positionRanges.push(slRange);
-
-                // Create shaded background for the trade duration
                 const backgroundRange = xAxis.createAxisRange(xAxis.makeDataItem({ value: startTime }));
                 const fillColor = direction === 'long' ? am5.color(0x00c782) : am5.color(0xf34a4a);
                 backgroundRange.get("axisFill").setAll({ fill: fillColor, fillOpacity: 0.1, visible: true });
@@ -242,19 +224,14 @@ HTML_TEMPLATE = """
                 const symbol = symbolInput.value.toUpperCase().trim();
                 const interval = document.getElementById('interval').value;
                 const numPredictions = document.getElementById('num_predictions').value;
-
                 if (!symbol) { statusEl.innerText = 'Error: Symbol cannot be empty.'; return; }
-                
                 statusEl.innerText = 'Fetching data from Bybit...';
                 fetchButton.disabled = true;
-
                 try {
                     const response = await fetch(`/api/candles?symbol=${symbol}&interval=${interval}&predictions=${numPredictions}`);
                     if (!response.ok) throw new Error((await response.json()).error || `HTTP error! status: ${response.status}`);
-                    
                     statusEl.innerText = 'Data received. Predicting...';
                     const data = await response.json();
-                    
                     const intervalConfig = !isNaN(interval) ? { timeUnit: "minute", count: parseInt(interval) } : { timeUnit: { 'D': 'day', 'W': 'week' }[interval] || 'day', count: 1 };
                     xAxis.set("baseInterval", intervalConfig);
                     series.data.setAll(data.candles);
@@ -271,32 +248,20 @@ HTML_TEMPLATE = """
                 }
             }
             
-            // --- NEW: Event listeners for the position modal buttons ---
             document.getElementById('set-position-btn').addEventListener('click', () => {
                 const entryPrice = parseFloat(entryPriceInput.value);
                 const tpPercent = parseFloat(document.getElementById('tp-percent').value);
                 const slPercent = parseFloat(document.getElementById('sl-percent').value);
                 const direction = document.querySelector('input[name="direction"]:checked').value;
-                
                 if (isNaN(entryPrice) || isNaN(tpPercent) || isNaN(slPercent) || !selectedCandleTimestamp) return;
-
-                let tpPrice, slPrice;
-                if (direction === 'long') {
-                    tpPrice = entryPrice * (1 + tpPercent / 100);
-                    slPrice = entryPrice * (1 - slPercent / 100);
-                } else { // short
-                    tpPrice = entryPrice * (1 - tpPercent / 100);
-                    slPrice = entryPrice * (1 + slPercent / 100);
-                }
-                
+                let tpPrice = direction === 'long' ? entryPrice * (1 + tpPercent / 100) : entryPrice * (1 - tpPercent / 100);
+                let slPrice = direction === 'long' ? entryPrice * (1 - slPercent / 100) : entryPrice * (1 + slPercent / 100);
                 drawPositionOnChart(entryPrice, tpPrice, slPrice, direction, selectedCandleTimestamp);
                 positionModal.classList.remove('visible');
             });
-
             document.getElementById('cancel-position-btn').addEventListener('click', () => {
                 positionModal.classList.remove('visible');
             });
-            
             createChart();
             fetchButton.addEventListener('click', fetchDataAndPredict);
             symbolInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') fetchDataAndPredict(); });
@@ -309,174 +274,117 @@ HTML_TEMPLATE = """
 
 # --- Data Fetching & Caching ---
 def get_bybit_data(symbol, interval):
-    """
-    Fetches candlestick data from the Bybit v5 API with in-memory caching.
-    """
+    """Fetches candlestick data from the Bybit v5 API with in-memory caching."""
     cache_key = f"{symbol}-{interval}"
     current_time = time.time()
-
     if cache_key in cache:
         last_fetch_time, cached_data = cache[cache_key]
         if current_time - last_fetch_time < CACHE_TTL_SECONDS:
             return cached_data
-
-    params = { "category": "spot", "symbol": symbol, "interval": interval, "limit": 500 }
+    params = {"category": "spot", "symbol": symbol, "interval": interval, "limit": 500}
     try:
         response = requests.get(BYBIT_API_URL, params=params)
         response.raise_for_status()
         data = response.json()
-
         if data.get("retCode") != 0: raise ValueError(data.get("retMsg", "Unknown Bybit API error"))
-
         candles = list(reversed(data["result"]["list"]))
         if not candles: return []
-            
         cache[cache_key] = (current_time, candles)
         return candles
     except requests.exceptions.RequestException as e: raise ConnectionError(f"Failed to connect to Bybit API: {e}")
     except (ValueError, KeyError) as e: raise ValueError(f"Error processing Bybit response: {e}")
 
-# --- Prediction Model (numpy-only) ---
-def build_features(data):
+# --- NEW: Prediction Model (Pure Python) ---
+def find_similar_patterns_pure_python(data_series, window_size=20, top_n=5):
     """
-    Builds a feature matrix and target vector from candlestick data.
+    Finds historical patterns similar to the most recent one using cosine similarity.
+    This is a pure Python implementation without numpy.
     """
-    N = data.shape[0]
-    if N < 101: return np.array([]), np.array([])
+    if len(data_series) < 2 * window_size: return None
 
-    closes = data[:, 3]
-    
-    data_prev = data[:-1]
-    data_prev[data_prev == 0] = 1e-10
-    log_returns = np.log(data[1:] / data_prev)
+    # Helper functions for vector math
+    def dot_product(v1, v2):
+        return sum(x * y for x, y in zip(v1, v2))
 
-    ma9 = np.convolve(closes, np.ones(9), 'valid') / 9
-    ma50 = np.convolve(closes, np.ones(50), 'valid') / 50
-    ma100 = np.convolve(closes, np.ones(100), 'valid') / 100
-    
-    body = np.abs(data[:, 0] - data[:, 3])
-    upper_wick = data[:, 1] - np.maximum(data[:, 0], data[:, 3])
-    lower_wick = np.minimum(data[:, 0], data[:, 3]) - data[:, 2]
+    def norm(v):
+        return math.sqrt(sum(x * x for x in v))
 
-    num_samples = N - 100
-    target = log_returns[99:, 3]
-
-    feat_log_returns = log_returns[98:-1, :4]
-    feat_ma100 = ma100[:num_samples]
-    feat_ma50 = ma50[50 : 50 + num_samples]
-    feat_ma9 = ma9[91 : 91 + num_samples]
-    feat_body = body[99 : 99 + num_samples]
-    feat_upper_wick = upper_wick[99 : 99 + num_samples]
-    feat_lower_wick = lower_wick[99 : 99 + num_samples]
-    
-    features = np.column_stack([
-        feat_log_returns, feat_ma9, feat_ma50, feat_ma100,
-        feat_body, feat_upper_wick, feat_lower_wick
-    ])
-    
-    return features, target
-
-def build_single_feature_vec(data):
-    """Efficiently builds one feature vector for the most recent candle."""
-    N = data.shape[0]
-    if N < 100: return None
-    closes = data[N-100:, 3]
-    
-    last_two = data[N-2:N].copy()
-    last_two[0, last_two[0] == 0] = 1e-10
-    log_ret = np.log(last_two[1] / last_two[0])[:4]
-    
-    last_candle = data[-1]
-    return np.hstack([
-        log_ret, np.mean(closes[-9:]), np.mean(closes[-50:]), np.mean(closes),
-        np.abs(last_candle[0] - last_candle[3]),
-        last_candle[1] - np.maximum(last_candle[0], last_candle[3]),
-        np.minimum(last_candle[0], last_candle[3]) - last_candle[2]
-    ])
-
-def find_similar_patterns(data, window_size=20, top_n=5):
-    """Finds historical patterns similar to the most recent one using cosine similarity."""
-    closes = data[:, 3]
-    log_returns_close = np.log(closes[1:] / closes[:-1] + 1e-10)
-    
-    if len(log_returns_close) < 2 * window_size: return None
-
-    current_pattern = log_returns_close[-window_size:]
-    current_norm = np.linalg.norm(current_pattern)
+    current_pattern = data_series[-window_size:]
+    current_norm = norm(current_pattern)
     if current_norm == 0: return None
 
-    shape = (len(log_returns_close) - window_size, window_size)
-    strides = (log_returns_close.strides[0], log_returns_close.strides[0])
-    historical_patterns = np.lib.stride_tricks.as_strided(log_returns_close, shape=shape, strides=strides)
+    similarities = []
+    # Create historical patterns using a sliding window
+    for i in range(len(data_series) - window_size):
+        historical_pattern = data_series[i : i + window_size]
+        historical_norm = norm(historical_pattern)
+        if historical_norm > 0:
+            similarity = dot_product(historical_pattern, current_pattern) / (historical_norm * current_norm)
+            # Store similarity and the index of the *next* candle's return
+            similarities.append({"sim": similarity, "outcome_index": i + window_size})
+
+    if not similarities: return None
     
-    dot_products = np.dot(historical_patterns, current_pattern)
-    historical_norms = np.linalg.norm(historical_patterns, axis=1)
-    
-    mask = historical_norms > 0
-    similarities = dot_products[mask] / (current_norm * historical_norms[mask])
-    
-    if len(similarities) < top_n: return None
-        
-    top_indices = np.argpartition(similarities, -top_n)[-top_n:]
-    original_indices = np.where(mask)[0][top_indices]
-    
-    outcome_indices = original_indices + window_size
-    valid_indices = outcome_indices[outcome_indices < len(log_returns_close)]
-    if len(valid_indices) == 0: return None
-        
-    return np.mean(log_returns_close[valid_indices]), np.mean(similarities[top_indices])
+    # Sort by similarity and get the top N
+    similarities.sort(key=lambda x: x["sim"], reverse=True)
+    top_patterns = similarities[:top_n]
+
+    if not top_patterns: return None
+
+    # Calculate the average outcome from the candles that followed the most similar patterns
+    avg_outcome = statistics.mean(data_series[p["outcome_index"]] for p in top_patterns)
+    return avg_outcome
 
 def predict_next_candles(candles_data, num_predictions=5):
-    """Trains a model and predicts the next N candles."""
-    if len(candles_data) < 150: return []
+    """
+    Trains a simplified model and predicts the next N candles using pure Python.
+    The prediction is based on historical pattern matching (cosine similarity).
+    """
+    if len(candles_data) < 50: return []
 
-    data = np.array([[float(c[1]), float(c[2]), float(c[3]), float(c[4]), float(c[5])] for c in candles_data])
-    features, target = build_features(data)
-    if features.shape[0] < 30: return []
-        
-    X_train, y_train = features[-300:], target[-300:]
+    # Convert raw string data to a list of lists of floats
+    # [timestamp, open, high, low, close, volume]
+    data = [[float(c[i]) for i in range(6)] for c in candles_data]
     
-    mean, std = np.mean(X_train, axis=0), np.std(X_train, axis=0)
-    std[std == 0] = 1
-    X_train_norm = (X_train - mean) / std
-    X_train_int = np.c_[np.ones(X_train_norm.shape[0]), X_train_norm]
-    
-    try:
-        coeffs, _, _, _ = np.linalg.lstsq(X_train_int, y_train, rcond=None)
-    except np.linalg.LinAlgError: return []
+    # Calculate average wick sizes for generating predicted candles
+    upper_wicks = [d[2] - max(d[1], d[4]) for d in data]
+    lower_wicks = [min(d[1], d[4]) - d[3] for d in data]
+    avg_upper_wick = statistics.mean(upper_wicks) if upper_wicks else 0
+    avg_lower_wick = statistics.mean(lower_wicks) if lower_wicks else 0
 
     predictions = []
-    current_data = data.copy()
-    avg_upper_wick = np.mean(data[:, 1] - np.maximum(data[:, 0], data[:, 3]))
-    avg_lower_wick = np.mean(np.minimum(data[:, 0], data[:, 3]) - data[:, 2])
-
+    current_candles = data[:]
+    
     for i in range(num_predictions):
-        last_feature_vec = build_single_feature_vec(current_data)
-        if last_feature_vec is None: break
+        closes = [c[4] for c in current_candles]
         
-        last_feature_vec_norm = (last_feature_vec - mean) / std
-        last_feature_vec_int = np.insert(last_feature_vec_norm, 0, 1)
-        predicted_log_return = last_feature_vec_int @ coeffs
+        # Calculate log returns of closing prices
+        log_returns_close = []
+        for j in range(1, len(closes)):
+            if closes[j-1] > 0:
+                log_returns_close.append(math.log(closes[j] / closes[j-1]))
         
-        pattern_info = find_similar_patterns(current_data)
-        if pattern_info:
-            pattern_outcome, confidence = pattern_info
-            blending_factor = min(confidence * 0.5, 0.5)
-            predicted_log_return = (predicted_log_return * (1 - blending_factor)) + (pattern_outcome * blending_factor)
+        if not log_returns_close: break
 
-        last_close = current_data[-1, 3]
-        predicted_close = last_close * np.exp(predicted_log_return)
+        # Find similar patterns and get the predicted next log return
+        predicted_log_return = find_similar_patterns_pure_python(log_returns_close)
+        
+        if predicted_log_return is None: break
+
+        last_close = current_candles[-1][4]
+        predicted_close = last_close * math.exp(predicted_log_return)
         
         pred_open = last_close
         pred_high = max(pred_open, predicted_close) + avg_upper_wick
         pred_low = min(pred_open, predicted_close) - avg_lower_wick
         
-        last_ts = int(candles_data[-1][0])
-        interval_ms = int(candles_data[-1][0]) - int(candles_data[-2][0])
-        new_ts = last_ts + (i + 1) * interval_ms
+        last_ts = int(current_candles[-1][0])
+        interval_ms = int(current_candles[-1][0]) - int(current_candles[-2][0])
+        new_ts = last_ts + interval_ms
         
-        new_candle_data = np.array([[pred_open, pred_high, pred_low, predicted_close, 0]])
-        current_data = np.vstack([current_data, new_candle_data])
+        # Add the new predicted candle to the list for the next iteration
+        new_candle = [new_ts, pred_open, pred_high, pred_low, predicted_close, 0]
+        current_candles.append(new_candle)
 
         predictions.append({"t": new_ts, "o": pred_open, "h": pred_high, "l": pred_low, "c": predicted_close})
 
@@ -493,16 +401,12 @@ def api_candles():
     interval = request.args.get('interval', '15')
     num_predictions = request.args.get('predictions', 5, type=int)
     num_predictions = max(1, min(num_predictions, 20)) 
-
-    if interval not in ALLOWED_INTERVALS: return jsonify({"error": f"Invalid interval"}), 400
-
+    if interval not in ALLOWED_INTERVALS: return jsonify({"error": "Invalid interval"}), 400
     try:
         raw_candles = get_bybit_data(symbol, interval)
         if not raw_candles: return jsonify({"error": "No data from Bybit API (check symbol)"}), 404
-        
         historical = [{"t": int(c[0]), "o": float(c[1]), "h": float(c[2]), "l": float(c[3]), "c": float(c[4]), "v": float(c[5])} for c in raw_candles]
         predicted = predict_next_candles(raw_candles, num_predictions)
-
         return jsonify({"symbol": symbol, "interval": interval, "candles": historical, "predicted": predicted})
     except (ConnectionError, ValueError) as e: return jsonify({"error": str(e)}), 500
     except Exception as e:
