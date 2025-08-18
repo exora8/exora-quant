@@ -1,24 +1,22 @@
 # ==============================================================================
 # Candlestick Chart with AI Prediction (Flask, amCharts5) - TERMUX VERSION
-# FINAL FIX: Uses absolute path for termux-api command to solve PATH issues.
+# FINAL FIX 2: Adds FFMPEG conversion to solve audio format incompatibility.
 # ==============================================================================
 # This version is MODIFIED to run on Termux by replacing PyAudio with the
-# native Termux-API for microphone access. All other functions are unchanged.
+# native Termux-API and adds an FFMPEG step to ensure audio is in WAV format.
 #
 # Voice Feature (Termux):
 # - When the script says "Listening...", Termux will record audio for 5 seconds.
-# - Speak a crypto pair name (e.g., "Bitcoin", "BTC", "beat till cee").
-# - The program auto-corrects it to the nearest valid ticker ("BTC").
-# - It then analyzes the USDT pair (BTCUSDT) on a 1-hour timeframe with
-#   20 prediction candles.
+# - The audio is then converted to WAV format using FFMPEG.
+# - The program auto-corrects your speech to the nearest valid ticker ("BTC").
 # - The analysis summary is spoken back to you via text-to-speech.
 #
 # How to Run on Termux:
 # 1. Install Termux and Termux:API from a source like F-Droid.
 #
-# 2. In your Termux shell, install the required packages:
+# 2. In your Termux shell, install the required packages (FFMPEG is crucial):
 #    pkg update && pkg upgrade
-#    pkg install python termux-api espeak
+#    pkg install python termux-api espeak ffmpeg
 #    pip install Flask requests speechrecognition pyttsx3 "thefuzz[speedup]"
 #
 # 3. Grant microphone permissions to the Termux:API app.
@@ -39,7 +37,7 @@ import os
 import subprocess
 from flask import Flask, jsonify, render_template_string, request
 
-# --- Voice and Parsing Libraries (Termux modification) ---
+# --- Voice and Parsing Libraries ---
 try:
     import speech_recognition as sr
     import pyttsx3
@@ -49,8 +47,8 @@ except ImportError:
     print("="*50)
     print("WARNING: Voice command libraries not found.")
     print("Please run: pip install speechrecognition pyttsx3 \"thefuzz[speedup]\"")
-    print("Also ensure 'espeak' and 'termux-api' are installed in Termux:")
-    print("pkg install espeak termux-api")
+    print("Also ensure 'espeak', 'ffmpeg', and 'termux-api' are installed:")
+    print("pkg install espeak ffmpeg termux-api")
     print("Voice features will be disabled.")
     print("="*50)
     VOICE_ENABLED = False
@@ -84,35 +82,27 @@ HTML_TEMPLATE = """
             background-color: #000;
         }
         #chartdiv { width: 100%; height: 100%; }
-        
-        /* --- MODIFIED: Wrapper for controls and toggle button --- */
         #controls-wrapper {
             position: absolute; top: 15px; left: 15px; z-index: 100;
             display: flex; align-items: flex-start; gap: 10px;
         }
-
-        /* --- NEW: Style for the toggle button --- */
         #toggle-controls-btn {
             width: 40px; height: 40px; padding: 0; font-size: 20px;
             border-radius: 8px; border: 1px solid #444; background-color: rgba(25, 25, 25, 0.85);
             color: #eee; cursor: pointer; backdrop-filter: blur(5px);
             display: flex; align-items: center; justify-content: center;
         }
-
         .controls-overlay {
             background-color: rgba(25, 25, 25, 0.85); backdrop-filter: blur(5px);
             padding: 12px; border-radius: 8px; border: 1px solid #333;
             display: flex; flex-wrap: wrap; align-items: center; gap: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-            /* --- NEW: Transition for smooth hide/show --- */
             transition: transform 0.3s ease-in-out, opacity 0.3s ease-in-out;
         }
-        /* --- NEW: Hidden state for the overlay --- */
         .controls-overlay.hidden {
             transform: translateX(calc(-100% - 20px));
             opacity: 0;
             pointer-events: none;
         }
-
         .controls-overlay label { color: #ccc; font-size: 14px; }
         .controls-overlay select, .controls-overlay input, .controls-overlay button {
             padding: 8px 12px; border-radius: 5px; border: 1px solid #444;
@@ -144,7 +134,6 @@ HTML_TEMPLATE = """
             #controls-wrapper { top: 10px; left: 10px; right: 10px; }
             .controls-overlay {
                 flex-direction: column; align-items: stretch; gap: 10px;
-                /* --- MODIFIED: Ensure overlay expands in mobile view --- */
                 flex-grow: 1;
             }
             .controls-overlay input, .controls-overlay select, .controls-overlay button {
@@ -153,7 +142,6 @@ HTML_TEMPLATE = """
             #status { margin-left: 0; margin-top: 5px; text-align: center; }
         }
     </style>
-    <!-- amCharts 5 CDN -->
     <script src="https://cdn.amcharts.com/lib/5/index.js"></script>
     <script src="https://cdn.amcharts.com/lib/5/xy.js"></script>
     <script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script>
@@ -161,15 +149,12 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div id="chartdiv"></div>
-
-    <!-- --- MODIFIED: New wrapper and toggle button added --- -->
     <div id="controls-wrapper">
         <button id="toggle-controls-btn" title="Toggle Controls">☰</button>
         <div class="controls-overlay">
             <label for="symbol">Symbol:</label>
             <input type="text" id="symbol" value="BTCUSDT" placeholder="e.g., BTCUSDT">
             <label for="interval">Timeframe:</label>
-            <!-- MODIFIED: Removed small timeframes and added larger ones like 2H, 6H, 12H -->
             <select id="interval">
                 <option value="60">1 hour</option>
                 <option value="120">2 hours</option>
@@ -186,7 +171,6 @@ HTML_TEMPLATE = """
             <div id="status"></div>
         </div>
     </div>
-
     <div id="position-modal">
         <div class="modal-content">
             <h3>Simulate Position</h3>
@@ -207,7 +191,6 @@ HTML_TEMPLATE = """
             </div>
         </div>
     </div>
-
     <script>
         document.addEventListener('DOMContentLoaded', function () {
             const statusEl = document.getElementById('status');
@@ -215,44 +198,22 @@ HTML_TEMPLATE = """
             const symbolInput = document.getElementById('symbol');
             const positionModal = document.getElementById('position-modal');
             const entryPriceInput = document.getElementById('entry-price');
-            
             const toggleBtn = document.getElementById('toggle-controls-btn');
             const controlsOverlay = document.querySelector('.controls-overlay');
-
             let selectedCandleTimestamp = null;
             let positionRanges = [];
             let root, chart, xAxis, yAxis, series, predictedSeries;
-
             function createChart() {
                 if (root) root.dispose();
                 root = am5.Root.new("chartdiv");
                 root.setThemes([am5themes_Animated.new(root), am5themes_Dark.new(root)]);
-
-                chart = root.container.children.push(am5xy.XYChart.new(root, {
-                    panX: true, panY: false, wheelX: "panX", wheelY: "zoomX", pinchZoomX: true
-                }));
-                
+                chart = root.container.children.push(am5xy.XYChart.new(root, { panX: true, panY: false, wheelX: "panX", wheelY: "zoomX", pinchZoomX: true }));
                 const cursor = chart.set("cursor", am5xy.XYCursor.new(root, { behavior: "panX" }));
                 cursor.lineY.set("visible", false);
-                
-                xAxis = chart.xAxes.push(am5xy.DateAxis.new(root, {
-                    baseInterval: { timeUnit: "minute", count: 1 },
-                    renderer: am5xy.AxisRendererX.new(root, { minGridDistance: 70 }),
-                    tooltip: am5.Tooltip.new(root, {})
-                }));
-
-                yAxis = chart.yAxes.push(am5xy.ValueAxis.new(root, {
-                    renderer: am5xy.AxisRendererY.new(root, {}),
-                    tooltip: am5.Tooltip.new(root, {})
-                }));
-                
-                series = chart.series.push(am5xy.CandlestickSeries.new(root, {
-                    name: "Historical", xAxis: xAxis, yAxis: yAxis,
-                    valueXField: "t", openValueYField: "o", highValueYField: "h", lowValueYField: "l", valueYField: "c",
-                    tooltip: am5.Tooltip.new(root, { labelText: "Source: Real\\nOpen: {openValueY}\\nHigh: {highValueY}\\nLow: {lowValueY}\\nClose: {valueY}" })
-                }));
-
-                series.columns.template.events.on("click", function(ev) {
+                xAxis = chart.xAxes.push(am5xy.DateAxis.new(root, { baseInterval: { timeUnit: "minute", count: 1 }, renderer: am5xy.AxisRendererX.new(root, { minGridDistance: 70 }), tooltip: am5.Tooltip.new(root, {}) }));
+                yAxis = chart.yAxes.push(am5xy.ValueAxis.new(root, { renderer: am5xy.AxisRendererY.new(root, {}), tooltip: am5.Tooltip.new(root, {}) }));
+                series = chart.series.push(am5xy.CandlestickSeries.new(root, { name: "Historical", xAxis: xAxis, yAxis: yAxis, valueXField: "t", openValueYField: "o", highValueYField: "h", lowValueYField: "l", valueYField: "c", tooltip: am5.Tooltip.new(root, { labelText: "Source: Real\\nOpen: {openValueY}\\nHigh: {highValueY}\\nLow: {lowValueY}\\nClose: {valueY}" }) }));
+                series.columns.template.events.on("click", function (ev) {
                     const dataItem = ev.target.dataItem;
                     if (dataItem) {
                         selectedCandleTimestamp = dataItem.get("valueX");
@@ -260,18 +221,11 @@ HTML_TEMPLATE = """
                         positionModal.classList.add("visible");
                     }
                 });
-                
-                predictedSeries = chart.series.push(am5xy.CandlestickSeries.new(root, {
-                    name: "Predicted", xAxis: xAxis, yAxis: yAxis,
-                    valueXField: "t", openValueYField: "o", highValueYField: "h", lowValueYField: "l", valueYField: "c",
-                    tooltip: am5.Tooltip.new(root, { labelText: "Source: AI Prediction\\nOpen: {openValueY}\\nHigh: {highValueY}\\nLow: {lowValueY}\\nClose: {valueY}" })
-                }));
+                predictedSeries = chart.series.push(am5xy.CandlestickSeries.new(root, { name: "Predicted", xAxis: xAxis, yAxis: yAxis, valueXField: "t", openValueYField: "o", highValueYField: "h", lowValueYField: "l", valueYField: "c", tooltip: am5.Tooltip.new(root, { labelText: "Source: AI Prediction\\nOpen: {openValueY}\\nHigh: {highValueY}\\nLow: {lowValueY}\\nClose: {valueY}" }) }));
                 predictedSeries.columns.template.setAll({ fill: am5.color(0xaaaaaa), stroke: am5.color(0xaaaaaa) });
-
                 chart.set("scrollbarX", am5.Scrollbar.new(root, { orientation: "horizontal" }));
                 chart.appear(1000, 100);
             }
-            
             function drawPositionOnChart(entryPrice, tpPrice, slPrice, direction, startTime) {
                 positionRanges.forEach(range => range.dispose());
                 positionRanges = [];
@@ -292,7 +246,6 @@ HTML_TEMPLATE = """
                 backgroundRange.get("axisFill").setAll({ fill: fillColor, fillOpacity: 0.1, visible: true });
                 positionRanges.push(backgroundRange);
             }
-
             async function fetchDataAndPredict() {
                 const symbol = symbolInput.value.toUpperCase().trim();
                 const interval = document.getElementById('interval').value;
@@ -320,11 +273,7 @@ HTML_TEMPLATE = """
                     setTimeout(() => { statusEl.innerText = ''; }, 5000);
                 }
             }
-            
-            toggleBtn.addEventListener('click', () => {
-                controlsOverlay.classList.toggle('hidden');
-            });
-
+            toggleBtn.addEventListener('click', () => { controlsOverlay.classList.toggle('hidden'); });
             document.getElementById('set-position-btn').addEventListener('click', () => {
                 const entryPrice = parseFloat(entryPriceInput.value);
                 const tpPercent = parseFloat(document.getElementById('tp-percent').value);
@@ -336,9 +285,7 @@ HTML_TEMPLATE = """
                 drawPositionOnChart(entryPrice, tpPrice, slPrice, direction, selectedCandleTimestamp);
                 positionModal.classList.remove('visible');
             });
-            document.getElementById('cancel-position-btn').addEventListener('click', () => {
-                positionModal.classList.remove('visible');
-            });
+            document.getElementById('cancel-position-btn').addEventListener('click', () => { positionModal.classList.remove('visible'); });
             createChart();
             fetchButton.addEventListener('click', fetchDataAndPredict);
             symbolInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') fetchDataAndPredict(); });
@@ -351,7 +298,6 @@ HTML_TEMPLATE = """
 
 # --- Data Fetching & Caching (UNMODIFIED) ---
 def get_bybit_data(symbol, interval):
-    """Fetches candlestick data from the Bybit v5 API with in-memory caching."""
     cache_key = f"{symbol}-{interval}"
     current_time = time.time()
     if cache_key in cache:
@@ -373,10 +319,6 @@ def get_bybit_data(symbol, interval):
 
 # --- Prediction Model (Pure Python, UNMODIFIED) ---
 def find_similar_patterns_pure_python(data_series, window_size=20, top_n=5):
-    """
-    Finds historical patterns similar to the most recent one using cosine similarity.
-    This is a pure Python implementation without numpy.
-    """
     if len(data_series) < 2 * window_size: return None
     def dot_product(v1, v2): return sum(x * y for x, y in zip(v1, v2))
     def norm(v): return math.sqrt(sum(x * x for x in v))
@@ -398,9 +340,6 @@ def find_similar_patterns_pure_python(data_series, window_size=20, top_n=5):
     return avg_outcome
 
 def predict_next_candles(candles_data, num_predictions=5):
-    """
-    Trains a simplified model and predicts the next N candles using pure Python.
-    """
     if len(candles_data) < 50: return []
     data = [[float(c[i]) for i in range(6)] for c in candles_data]
     upper_wicks = [d[2] - max(d[1], d[4]) for d in data]
@@ -455,7 +394,6 @@ def get_all_bybit_tickers():
             print(f"Warning: Could not fetch tickers from Bybit: {data.get('retMsg')}")
     except Exception as e:
         print(f"Error fetching Bybit tickers: {e}")
-        print("Auto-parsing might be less effective.")
 
 def find_closest_ticker(text, ticker_list):
     if not ticker_list or not text: return None
@@ -501,47 +439,59 @@ def analyze_and_speak(ticker):
         speak(f"Sorry, an error occurred while analyzing {ticker_name}.")
 
 # ==============================================================================
-# === MODIFIED VOICE LOOP FOR TERMUX (WITH ABSOLUTE PATH FIX) ===
+# === MODIFIED VOICE LOOP FOR TERMUX (WITH FFMPEG CONVERSION) ===
 # ==============================================================================
 def voice_command_loop():
     recognizer = sr.Recognizer()
-    temp_audio_file = "temp_voice_input.wav"
     
-    # --- THIS IS THE FIX ---
-    # Use the full, absolute path to the Termux command
+    # Define filenames for the raw recording and the converted WAV file
+    temp_raw_audio_file = "temp_unconverted.m4a"
+    temp_wav_file = "temp_voice_input.wav"
+    
+    # Define full paths for Termux commands
     termux_mic_command = "/data/data/com.termux/files/usr/bin/termux-microphone-record"
+    ffmpeg_command = "/data/data/com.termux/files/usr/bin/ffmpeg"
 
-    # Check if the termux-api command is available at the specified path
+    # Check for dependencies before starting
     if not os.path.exists(termux_mic_command):
-        print("="*50)
-        print(f"FATAL ERROR: Command not found at '{termux_mic_command}'.")
-        print("This script's voice features require the Termux:API package.")
-        print("Please run 'pkg install termux-api' in your Termux shell,")
-        print("and ensure the Termux:API app is installed and has permissions.")
-        print("Voice assistant will not start.")
-        print("="*50)
+        print("FATAL ERROR: 'termux-microphone-record' not found. Please run 'pkg install termux-api'.")
+        return
+    if not os.path.exists(ffmpeg_command):
+        print("FATAL ERROR: 'ffmpeg' not found. Please run 'pkg install ffmpeg'.")
         return
 
-    print("\n🚀 Voice Assistant is Ready! (Termux Mode) 🚀")
+    print("\n🚀 Voice Assistant is Ready! (Termux Mode with FFMPEG) 🚀")
     speak("Voice assistant is online.")
 
     while True:
         try:
             print("\nListening... (Recording for 5 seconds via Termux API)")
             
-            # Use the full path in the subprocess call
+            # 1. Record audio using Termux-API
             record_process = subprocess.run(
-                [termux_mic_command, '-f', temp_audio_file, '-l', '5'],
+                [termux_mic_command, '-f', temp_raw_audio_file, '-l', '5'],
                 capture_output=True, text=True, timeout=10
             )
 
             if record_process.returncode != 0:
                 print(f"Error during microphone recording: {record_process.stderr}")
                 speak("I had a problem with the microphone.")
-                time.sleep(2)
                 continue
 
-            with sr.AudioFile(temp_audio_file) as source:
+            # 2. Convert the recorded audio to WAV format using FFMPEG
+            print("Converting audio to WAV format...")
+            convert_process = subprocess.run(
+                [ffmpeg_command, '-i', temp_raw_audio_file, '-y', temp_wav_file],
+                capture_output=True, text=True
+            )
+
+            if convert_process.returncode != 0:
+                print(f"Error converting audio with ffmpeg: {convert_process.stderr}")
+                speak("I had a problem processing the audio.")
+                continue
+
+            # 3. Process the correctly formatted WAV file
+            with sr.AudioFile(temp_wav_file) as source:
                 audio = recognizer.record(source)
 
             print("Recognizing...")
@@ -561,14 +511,15 @@ def voice_command_loop():
         except sr.RequestError as e:
             print(f"Could not request results from Google Speech Recognition service; {e}")
             speak("Sorry, the speech service is currently unavailable.")
-        except FileNotFoundError:
-             print("The temporary audio file was not found. Recording might have failed.")
         except Exception as e:
             print(f"An unexpected error occurred in the voice loop: {e}")
             time.sleep(2)
         finally:
-            if os.path.exists(temp_audio_file):
-                os.remove(temp_audio_file)
+            # 4. Clean up BOTH temporary files
+            if os.path.exists(temp_raw_audio_file):
+                os.remove(temp_raw_audio_file)
+            if os.path.exists(temp_wav_file):
+                os.remove(temp_wav_file)
 
 # --- Flask Routes (UNMODIFIED) ---
 @app.route('/')
