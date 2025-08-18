@@ -1,41 +1,39 @@
 # ==============================================================================
-# Candlestick Chart with AI Prediction (Flask, amCharts5) - TERMUX VERSION
+# Candlestick Chart with AI Prediction (Flask, amCharts5) - VERSI TERMUX INDONESIA
 # ==============================================================================
-# This script has been modified for lightweight and reliable execution on Termux.
-# It uses the Termux-API for voice commands, removing the need for heavy
-# libraries like PyAudio, SpeechRecognition, and pyttsx3.
+# Skrip ini telah dimodifikasi untuk eksekusi yang ringan dan andal di Termux,
+# dengan dukungan penuh untuk perintah suara dalam Bahasa Indonesia.
 #
-# Voice Feature (Termux):
-# - When the script prints "Listening...", a Termux API pop-up will appear
-#   for you to speak into.
-# - Say a crypto pair name (e.g., "Bitcoin", "Ethereum").
-# - The script auto-corrects it to the nearest valid ticker ("BTC", "ETH").
-# - It analyzes the USDT pair (e.g., BTCUSDT) on a 1-hour timeframe.
-# - The analysis summary is spoken back to you using Android's TTS engine.
+# Fitur Suara (Termux):
+# - Ketika skrip menampilkan "Mendengarkan...", pop-up Termux API akan muncul
+#   agar Anda dapat berbicara.
+# - Ucapkan nama pasangan kripto (contoh: "Bitcoin", "Ethereum").
+# - Skrip akan mengoreksinya secara otomatis ke ticker yang valid ("BTC", "ETH").
+# - Analisis akan dilakukan pada pasangan USDT (misal: BTCUSDT) pada timeframe 1 jam.
+# - Ringkasan analisis akan diucapkan kembali kepada Anda menggunakan suara Bahasa Indonesia.
 #
-# Core Libraries:
-# - Flask, requests, math, statistics: For the web chart and analysis.
-# - threading: To run the voice listener without blocking the web server.
-# - subprocess: To call Termux-API commands for voice I/O.
-# - thefuzz: For fuzzy string matching to auto-correct ticker names.
+# Cara Menjalankan di Termux:
+# 1. Instal aplikasi Termux:API dari F-Droid atau Google Play Store.
 #
-# How to Run on Termux:
-# 1. Install the Termux:API app from F-Droid or the Google Play Store.
-#
-# 2. In your Termux terminal, install the necessary packages:
+# 2. Di terminal Termux, instal paket yang diperlukan:
 #    pkg update && pkg upgrade
 #    pkg install python termux-api
 #
-# 3. Install the required Python libraries:
+# 3. Instal library Python yang dibutuhkan:
 #    pip install Flask requests "thefuzz"
 #
-# 4. Save this script as a Python file (e.g., chart_app.py).
+# 4. (PENTING) Atur Bahasa Input Suara di Android Anda:
+#    - Buka Pengaturan -> Sistem -> Bahasa & masukan -> Keyboard virtual.
+#    - Pilih "Pengetikan Suara Google" (atau yang serupa).
+#    - Pastikan Bahasa utamanya adalah "Bahasa Indonesia".
 #
-# 5. Run the script:
-#    python chart_app.py
+# 5. Simpan skrip ini sebagai file Python (misal: chart_app_id.py).
 #
-# 6. Access the web chart in your phone's browser: http://localhost:5000
-# 7. Follow the prompts in the terminal to use voice commands.
+# 6. Jalankan skrip:
+#    python chart_app_id.py
+#
+# 7. Akses chart di browser ponsel Anda: http://localhost:5000
+# 8. Ikuti petunjuk di terminal untuk menggunakan perintah suara.
 # ==============================================================================
 
 import time
@@ -50,19 +48,18 @@ from flask import Flask, jsonify, render_template_string, request
 # --- Voice and Parsing Libraries ---
 try:
     from thefuzz import process as fuzzy_process
-    # Check if Termux API is available and working
     termux_api_check = subprocess.run(['termux-toast', '-s', 'API OK'], capture_output=True, text=True)
     if termux_api_check.returncode != 0:
         raise ImportError("Termux API not working.")
     VOICE_ENABLED = True
 except (ImportError, FileNotFoundError):
     print("="*50)
-    print("WARNING: Voice command dependencies not met for Termux.")
-    print("Please ensure you have run:")
+    print("PERINGATAN: Ketergantungan perintah suara untuk Termux tidak terpenuhi.")
+    print("Pastikan Anda sudah menjalankan:")
     print("1. pkg install termux-api")
     print("2. pip install thefuzz")
-    print("3. Installed the Termux:API app on your phone.")
-    print("Voice features will be disabled.")
+    print("3. Menginstal aplikasi Termux:API di ponsel Anda.")
+    print("Fitur suara akan dinonaktifkan.")
     print("="*50)
     VOICE_ENABLED = False
 
@@ -95,35 +92,27 @@ HTML_TEMPLATE = """
             background-color: #000;
         }
         #chartdiv { width: 100%; height: 100%; }
-        
-        /* --- MODIFIED: Wrapper for controls and toggle button --- */
         #controls-wrapper {
             position: absolute; top: 15px; left: 15px; z-index: 100;
             display: flex; align-items: flex-start; gap: 10px;
         }
-
-        /* --- NEW: Style for the toggle button --- */
         #toggle-controls-btn {
             width: 40px; height: 40px; padding: 0; font-size: 20px;
             border-radius: 8px; border: 1px solid #444; background-color: rgba(25, 25, 25, 0.85);
             color: #eee; cursor: pointer; backdrop-filter: blur(5px);
             display: flex; align-items: center; justify-content: center;
         }
-
         .controls-overlay {
             background-color: rgba(25, 25, 25, 0.85); backdrop-filter: blur(5px);
             padding: 12px; border-radius: 8px; border: 1px solid #333;
             display: flex; flex-wrap: wrap; align-items: center; gap: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-            /* --- NEW: Transition for smooth hide/show --- */
             transition: transform 0.3s ease-in-out, opacity 0.3s ease-in-out;
         }
-        /* --- NEW: Hidden state for the overlay --- */
         .controls-overlay.hidden {
             transform: translateX(calc(-100% - 20px));
             opacity: 0;
             pointer-events: none;
         }
-
         .controls-overlay label { color: #ccc; font-size: 14px; }
         .controls-overlay select, .controls-overlay input, .controls-overlay button {
             padding: 8px 12px; border-radius: 5px; border: 1px solid #444;
@@ -150,21 +139,13 @@ HTML_TEMPLATE = """
         .modal-content h3 { grid-column: 1 / -1; margin: 0 0 10px; text-align: center; }
         .modal-content input[type="number"], .modal-content .radio-group { width: 100%; box-sizing: border-box; }
         .modal-buttons { grid-column: 1 / -1; display: flex; justify-content: space-between; margin-top: 15px; }
-
         @media (max-width: 768px) {
             #controls-wrapper { top: 10px; left: 10px; right: 10px; }
-            .controls-overlay {
-                flex-direction: column; align-items: stretch; gap: 10px;
-                /* --- MODIFIED: Ensure overlay expands in mobile view --- */
-                flex-grow: 1;
-            }
-            .controls-overlay input, .controls-overlay select, .controls-overlay button {
-                width: 100%; box-sizing: border-box;
-            }
+            .controls-overlay { flex-direction: column; align-items: stretch; gap: 10px; flex-grow: 1; }
+            .controls-overlay input, .controls-overlay select, .controls-overlay button { width: 100%; box-sizing: border-box; }
             #status { margin-left: 0; margin-top: 5px; text-align: center; }
         }
     </style>
-    <!-- amCharts 5 CDN -->
     <script src="https://cdn.amcharts.com/lib/5/index.js"></script>
     <script src="https://cdn.amcharts.com/lib/5/xy.js"></script>
     <script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script>
@@ -172,15 +153,12 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div id="chartdiv"></div>
-
-    <!-- --- MODIFIED: New wrapper and toggle button added --- -->
     <div id="controls-wrapper">
         <button id="toggle-controls-btn" title="Toggle Controls">☰</button>
         <div class="controls-overlay">
             <label for="symbol">Symbol:</label>
             <input type="text" id="symbol" value="BTCUSDT" placeholder="e.g., BTCUSDT">
             <label for="interval">Timeframe:</label>
-            <!-- MODIFIED: Removed small timeframes and added larger ones like 2H, 6H, 12H -->
             <select id="interval">
                 <option value="60">1 hour</option>
                 <option value="120">2 hours</option>
@@ -197,7 +175,6 @@ HTML_TEMPLATE = """
             <div id="status"></div>
         </div>
     </div>
-
     <div id="position-modal">
         <div class="modal-content">
             <h3>Simulate Position</h3>
@@ -218,7 +195,6 @@ HTML_TEMPLATE = """
             </div>
         </div>
     </div>
-
     <script>
         document.addEventListener('DOMContentLoaded', function () {
             const statusEl = document.getElementById('status');
@@ -226,44 +202,22 @@ HTML_TEMPLATE = """
             const symbolInput = document.getElementById('symbol');
             const positionModal = document.getElementById('position-modal');
             const entryPriceInput = document.getElementById('entry-price');
-            
             const toggleBtn = document.getElementById('toggle-controls-btn');
             const controlsOverlay = document.querySelector('.controls-overlay');
-
             let selectedCandleTimestamp = null;
             let positionRanges = [];
             let root, chart, xAxis, yAxis, series, predictedSeries;
-
             function createChart() {
                 if (root) root.dispose();
                 root = am5.Root.new("chartdiv");
                 root.setThemes([am5themes_Animated.new(root), am5themes_Dark.new(root)]);
-
-                chart = root.container.children.push(am5xy.XYChart.new(root, {
-                    panX: true, panY: false, wheelX: "panX", wheelY: "zoomX", pinchZoomX: true
-                }));
-                
+                chart = root.container.children.push(am5xy.XYChart.new(root, { panX: true, panY: false, wheelX: "panX", wheelY: "zoomX", pinchZoomX: true }));
                 const cursor = chart.set("cursor", am5xy.XYCursor.new(root, { behavior: "panX" }));
                 cursor.lineY.set("visible", false);
-                
-                xAxis = chart.xAxes.push(am5xy.DateAxis.new(root, {
-                    baseInterval: { timeUnit: "minute", count: 1 },
-                    renderer: am5xy.AxisRendererX.new(root, { minGridDistance: 70 }),
-                    tooltip: am5.Tooltip.new(root, {})
-                }));
-
-                yAxis = chart.yAxes.push(am5xy.ValueAxis.new(root, {
-                    renderer: am5xy.AxisRendererY.new(root, {}),
-                    tooltip: am5.Tooltip.new(root, {})
-                }));
-                
-                series = chart.series.push(am5xy.CandlestickSeries.new(root, {
-                    name: "Historical", xAxis: xAxis, yAxis: yAxis,
-                    valueXField: "t", openValueYField: "o", highValueYField: "h", lowValueYField: "l", valueYField: "c",
-                    tooltip: am5.Tooltip.new(root, { labelText: "Source: Real\\nOpen: {openValueY}\\nHigh: {highValueY}\\nLow: {lowValueY}\\nClose: {valueY}" })
-                }));
-
-                series.columns.template.events.on("click", function(ev) {
+                xAxis = chart.xAxes.push(am5xy.DateAxis.new(root, { baseInterval: { timeUnit: "minute", count: 1 }, renderer: am5xy.AxisRendererX.new(root, { minGridDistance: 70 }), tooltip: am5.Tooltip.new(root, {}) }));
+                yAxis = chart.yAxes.push(am5xy.ValueAxis.new(root, { renderer: am5xy.AxisRendererY.new(root, {}), tooltip: am5.Tooltip.new(root, {}) }));
+                series = chart.series.push(am5xy.CandlestickSeries.new(root, { name: "Historical", xAxis: xAxis, yAxis: yAxis, valueXField: "t", openValueYField: "o", highValueYField: "h", lowValueYField: "l", valueYField: "c", tooltip: am5.Tooltip.new(root, { labelText: "Source: Real\\nOpen: {openValueY}\\nHigh: {highValueY}\\nLow: {lowValueY}\\nClose: {valueY}" }) }));
+                series.columns.template.events.on("click", function (ev) {
                     const dataItem = ev.target.dataItem;
                     if (dataItem) {
                         selectedCandleTimestamp = dataItem.get("valueX");
@@ -271,18 +225,11 @@ HTML_TEMPLATE = """
                         positionModal.classList.add("visible");
                     }
                 });
-                
-                predictedSeries = chart.series.push(am5xy.CandlestickSeries.new(root, {
-                    name: "Predicted", xAxis: xAxis, yAxis: yAxis,
-                    valueXField: "t", openValueYField: "o", highValueYField: "h", lowValueYField: "l", valueYField: "c",
-                    tooltip: am5.Tooltip.new(root, { labelText: "Source: AI Prediction\\nOpen: {openValueY}\\nHigh: {highValueY}\\nLow: {lowValueY}\\nClose: {valueY}" })
-                }));
+                predictedSeries = chart.series.push(am5xy.CandlestickSeries.new(root, { name: "Predicted", xAxis: xAxis, yAxis: yAxis, valueXField: "t", openValueYField: "o", highValueYField: "h", lowValueYField: "l", valueYField: "c", tooltip: am5.Tooltip.new(root, { labelText: "Source: AI Prediction\\nOpen: {openValueY}\\nHigh: {highValueY}\\nLow: {lowValueY}\\nClose: {valueY}" }) }));
                 predictedSeries.columns.template.setAll({ fill: am5.color(0xaaaaaa), stroke: am5.color(0xaaaaaa) });
-
                 chart.set("scrollbarX", am5.Scrollbar.new(root, { orientation: "horizontal" }));
                 chart.appear(1000, 100);
             }
-            
             function drawPositionOnChart(entryPrice, tpPrice, slPrice, direction, startTime) {
                 positionRanges.forEach(range => range.dispose());
                 positionRanges = [];
@@ -303,7 +250,6 @@ HTML_TEMPLATE = """
                 backgroundRange.get("axisFill").setAll({ fill: fillColor, fillOpacity: 0.1, visible: true });
                 positionRanges.push(backgroundRange);
             }
-
             async function fetchDataAndPredict() {
                 const symbol = symbolInput.value.toUpperCase().trim();
                 const interval = document.getElementById('interval').value;
@@ -331,11 +277,7 @@ HTML_TEMPLATE = """
                     setTimeout(() => { statusEl.innerText = ''; }, 5000);
                 }
             }
-            
-            toggleBtn.addEventListener('click', () => {
-                controlsOverlay.classList.toggle('hidden');
-            });
-
+            toggleBtn.addEventListener('click', () => { controlsOverlay.classList.toggle('hidden'); });
             document.getElementById('set-position-btn').addEventListener('click', () => {
                 const entryPrice = parseFloat(entryPriceInput.value);
                 const tpPercent = parseFloat(document.getElementById('tp-percent').value);
@@ -347,9 +289,7 @@ HTML_TEMPLATE = """
                 drawPositionOnChart(entryPrice, tpPrice, slPrice, direction, selectedCandleTimestamp);
                 positionModal.classList.remove('visible');
             });
-            document.getElementById('cancel-position-btn').addEventListener('click', () => {
-                positionModal.classList.remove('visible');
-            });
+            document.getElementById('cancel-position-btn').addEventListener('click', () => { positionModal.classList.remove('visible'); });
             createChart();
             fetchButton.addEventListener('click', fetchDataAndPredict);
             symbolInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') fetchDataAndPredict(); });
@@ -379,15 +319,11 @@ def get_bybit_data(symbol, interval):
         if not candles: return []
         cache[cache_key] = (current_time, candles)
         return candles
-    except requests.exceptions.RequestException as e: raise ConnectionError(f"Failed to connect to Bybit API: {e}")
-    except (ValueError, KeyError) as e: raise ValueError(f"Error processing Bybit response: {e}")
+    except requests.exceptions.RequestException as e: raise ConnectionError(f"Gagal terhubung ke API Bybit: {e}")
+    except (ValueError, KeyError) as e: raise ValueError(f"Error saat memproses respons Bybit: {e}")
 
 # --- Prediction Model (Pure Python) ---
 def find_similar_patterns_pure_python(data_series, window_size=20, top_n=5):
-    """
-    Finds historical patterns similar to the most recent one using cosine similarity.
-    This is a pure Python implementation without numpy.
-    """
     if len(data_series) < 2 * window_size: return None
     def dot_product(v1, v2): return sum(x * y for x, y in zip(v1, v2))
     def norm(v): return math.sqrt(sum(x * x for x in v))
@@ -409,9 +345,6 @@ def find_similar_patterns_pure_python(data_series, window_size=20, top_n=5):
     return avg_outcome
 
 def predict_next_candles(candles_data, num_predictions=5):
-    """
-    Trains a simplified model and predicts the next N candles using pure Python.
-    """
     if len(candles_data) < 50: return []
     data = [[float(c[i]) for i in range(6)] for c in candles_data]
     upper_wicks = [d[2] - max(d[1], d[4]) for d in data]
@@ -439,21 +372,22 @@ def predict_next_candles(candles_data, num_predictions=5):
         predictions.append({"t": new_ts, "o": pred_open, "h": pred_high, "l": pred_low, "c": predicted_close})
     return predictions
 
-# --- [TERMUX] VOICE COMMAND & AUTO-PARSING FUNCTIONS ---
+# --- [TERMUX INDONESIA] FUNGSI PERINTAH SUARA ---
 
 def speak(text):
-    """Uses the Termux-API to speak text aloud."""
-    print(f"Speaking: {text}")
+    """Menggunakan Termux-API untuk mengucapkan teks dengan suara Bahasa Indonesia."""
+    print(f"Mengucapkan: {text}")
     try:
-        subprocess.run(['termux-tts-speak', text], check=True)
+        # Menggunakan flag '-l id-ID' untuk bahasa Indonesia
+        subprocess.run(['termux-tts-speak', '-l', 'id-ID', text], check=True)
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        print(f"Error with termux-tts-speak: {e}")
-        print("Please ensure Termux:API is installed and configured.")
+        print(f"Error dengan termux-tts-speak: {e}")
+        print("Pastikan Termux:API sudah terinstal dan dikonfigurasi.")
 
 def get_all_bybit_tickers():
-    """Fetches all USDT spot tickers from Bybit for the auto-parser."""
+    """Mengambil semua ticker spot USDT dari Bybit untuk parser otomatis."""
     global VALID_TICKERS
-    print("Fetching available tickers from Bybit for auto-parsing...")
+    print("Mengambil ticker yang tersedia dari Bybit untuk koreksi otomatis...")
     try:
         params = {"category": "spot"}
         response = requests.get(BYBIT_SYMBOLS_URL, params=params)
@@ -466,15 +400,14 @@ def get_all_bybit_tickers():
                 if item['symbol'].endswith('USDT')
             ]
             VALID_TICKERS = list(set(symbols))
-            print(f"Loaded {len(VALID_TICKERS)} tickers for auto-correction.")
+            print(f"Berhasil memuat {len(VALID_TICKERS)} ticker untuk koreksi otomatis.")
         else:
-            print(f"Warning: Could not fetch tickers from Bybit: {data.get('retMsg')}")
+            print(f"Peringatan: Tidak dapat mengambil ticker dari Bybit: {data.get('retMsg')}")
     except Exception as e:
-        print(f"Error fetching Bybit tickers: {e}")
-        print("Auto-parsing might be less effective.")
+        print(f"Error saat mengambil ticker Bybit: {e}")
 
 def find_closest_ticker(text, ticker_list):
-    """Finds the most similar ticker from a list using fuzzy matching."""
+    """Mencari ticker yang paling mirip dari daftar menggunakan fuzzy matching."""
     if not ticker_list or not text:
         return None
     for ticker in ticker_list:
@@ -486,7 +419,7 @@ def find_closest_ticker(text, ticker_list):
     return None
 
 def analyze_and_speak(ticker):
-    """Performs the analysis and speaks the result."""
+    """Melakukan analisis dan mengucapkan hasilnya dalam Bahasa Indonesia."""
     symbol = f"{ticker}USDT"
     interval = "60"
     num_predictions = 20
@@ -494,53 +427,54 @@ def analyze_and_speak(ticker):
     friendly_names = {"BTC": "Bitcoin", "ETH": "Ethereum", "SOL": "Solana"}
     ticker_name = friendly_names.get(ticker, ticker)
 
-    print(f"Analyzing {symbol} on {interval}m timeframe with {num_predictions} predictions...")
+    print(f"Menganalisis {symbol} pada timeframe {interval}m dengan {num_predictions} prediksi...")
     
     try:
         raw_candles = get_bybit_data(symbol, interval)
         if not raw_candles:
-            speak(f"Sorry, I could not find any data for {ticker_name}.")
+            speak(f"Maaf, saya tidak dapat menemukan data untuk {ticker_name}.")
             return
 
         predicted_candles = predict_next_candles(raw_candles, num_predictions)
         if not predicted_candles:
-            speak(f"Sorry, I was unable to generate a prediction for {ticker_name}.")
+            speak(f"Maaf, saya tidak dapat membuat prediksi untuk {ticker_name}.")
             return
 
         last_price = float(raw_candles[-1][4])
         predicted_closes = [p['c'] for p in predicted_candles]
         final_predicted_price = predicted_closes[-1]
         
-        direction = "rise" if final_predicted_price > last_price else "drop"
+        direction = "naik" if final_predicted_price > last_price else "turun"
         percent_change = abs((final_predicted_price - last_price) / last_price * 100)
         
         combined_prices = [float(c[4]) for c in raw_candles[-10:]] + predicted_closes
         consolidation_low = min(combined_prices)
         consolidation_high = max(combined_prices)
         
+        direction_move = "pergerakan naik" if direction == "naik" else "pergerakan turun"
+
         summary = (
-            f"Okay, on {ticker_name} on the 1 hour timeframe, the price is likely to {direction} "
-            f"by around {percent_change:.2f}% from the latest price of {last_price:,.2f}. "
-            f"It may consolidate around {consolidation_low:,.2f} and {consolidation_high:,.2f} "
-            f"before continuing its {direction if direction == 'rise' else 'downward'} move."
+            f"Baik, untuk {ticker_name} pada timeframe 1 jam, harga kemungkinan akan {direction} "
+            f"sekitar {percent_change:.2f} persen dari harga terakhir di {last_price:,.2f}. "
+            f"Harga mungkin akan berkonsolidasi di sekitar {consolidation_low:,.2f} dan {consolidation_high:,.2f} "
+            f"sebelum melanjutkan {direction_move}."
         )
         
         speak(summary)
 
     except Exception as e:
-        print(f"An error occurred during analysis: {e}")
-        speak(f"Sorry, an error occurred while analyzing {ticker_name}.")
+        print(f"Terjadi error saat analisis: {e}")
+        speak(f"Maaf, terjadi error saat menganalisis {ticker_name}.")
 
 def voice_command_loop():
-    """The main loop for listening to voice commands using Termux-API."""
-    print("\n🚀 Termux Voice Assistant is Ready! 🚀")
-    speak("Voice assistant is online.")
+    """Loop utama untuk mendengarkan perintah suara menggunakan Termux-API."""
+    print("\n🚀 Asisten Suara Termux Siap! 🚀")
+    speak("Asisten suara online.")
 
     while True:
         try:
-            print("\nListening for a crypto pair via Termux API...")
+            print("\nMendengarkan nama pasangan kripto melalui Termux API...")
             
-            # This command opens the Android speech recognition dialog
             result = subprocess.run(
                 ['termux-speech-to-text'],
                 capture_output=True, text=True, check=True
@@ -549,33 +483,27 @@ def voice_command_loop():
             text = result.stdout.strip()
             
             if not text:
-                print("No input received.")
+                print("Tidak ada input suara diterima.")
                 continue
 
-            print(f"Heard: '{text}'")
+            print(f"Terdengar: '{text}'")
             
             matched_ticker = find_closest_ticker(text, VALID_TICKERS)
             
             if matched_ticker:
-                print(f"Corrected to: '{matched_ticker}'")
+                print(f"Dikoreksi menjadi: '{matched_ticker}'")
                 analyze_and_speak(matched_ticker)
             else:
-                speak("Sorry, I could not recognize that crypto pair. Please try again.")
+                speak("Maaf, saya tidak mengenali pasangan kripto itu. Silakan coba lagi.")
 
-        except subprocess.CalledProcessError as e:
-            # This can happen if the user cancels the voice input dialog
-            error_info = e.stderr.strip()
-            if "RECOGNIZER_BUSY" in error_info:
-                 print("Recognizer is busy, waiting a moment...")
-                 time.sleep(2)
-            else:
-                print("Voice recognition canceled or failed.")
+        except subprocess.CalledProcessError:
+            print("Pengenalan suara dibatalkan atau gagal.")
         except FileNotFoundError:
-            print("Error: 'termux-speech-to-text' command not found.")
-            speak("Error, the Termux API command is missing. Shutting down voice assistant.")
+            print("Error: Perintah 'termux-speech-to-text' tidak ditemukan.")
+            speak("Error, perintah Termux API tidak ditemukan. Mematikan asisten suara.")
             break
         except Exception as e:
-            print(f"An unexpected error occurred in the voice loop: {e}")
+            print(f"Terjadi error tak terduga di loop suara: {e}")
             time.sleep(2)
 
 # --- Flask Routes ---
@@ -608,6 +536,4 @@ if __name__ == '__main__':
         voice_thread = threading.Thread(target=voice_command_loop, daemon=True)
         voice_thread.start()
     
-    # Use 0.0.0.0 to make it accessible from other devices on your network
-    # (e.g., a laptop connected to the same WiFi as your phone)
     app.run(host='0.0.0.0', port=5000, debug=False)
