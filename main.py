@@ -32,7 +32,8 @@ import statistics
 from flask import Flask, jsonify, render_template_string, request
 
 # --- Configuration ---
-ALLOWED_INTERVALS = ["1", "3", "5", "15", "30", "60", "120", "240", "360", "720", "D", "W", "M"]
+# MODIFIED: Removed smaller timeframes like 1, 3, 5 minutes. 3H (180) is not supported by the API.
+ALLOWED_INTERVALS = ["15", "30", "60", "120", "240", "360", "720", "D", "W", "M"]
 BYBIT_API_URL = "https://api.bybit.com/v5/market/kline"
 CACHE_TTL_SECONDS = 15
 
@@ -142,11 +143,16 @@ HTML_TEMPLATE = """
             <label for="symbol">Symbol:</label>
             <input type="text" id="symbol" value="BTCUSDT" placeholder="e.g., BTCUSDT">
             <label for="interval">Timeframe:</label>
+            <!-- MODIFIED: Removed small timeframes and added larger ones like 2H, 6H, 12H -->
             <select id="interval">
-                <option value="1">1 minute</option> <option value="5">5 minutes</option>
-                <option value="15" selected>15 minutes</option> <option value="30">30 minutes</option>
-                <option value="60">1 hour</option> <option value="240">4 hours</option>
-                <option value="D">Daily</option> <option value="W">Weekly</option>
+                <option value="60">1 hour</option>
+                <option value="120">2 hours</option>
+                <option value="240">4 hours</option>
+                <option value="360">6 hours</option>
+                <option value="720">12 hours</option>
+                <option value="D">Daily</option>
+                <option value="W">Weekly</option>
+                <option value="M">Monthly</option>
             </select>
             <label for="num_predictions">Predictions:</label>
             <input type="number" id="num_predictions" value="5" min="1" max="20">
@@ -274,7 +280,7 @@ HTML_TEMPLATE = """
                     if (!response.ok) throw new Error((await response.json()).error || `HTTP error! status: ${response.status}`);
                     statusEl.innerText = 'Data received. Predicting...';
                     const data = await response.json();
-                    const intervalConfig = !isNaN(interval) ? { timeUnit: "minute", count: parseInt(interval) } : { timeUnit: { 'D': 'day', 'W': 'week' }[interval] || 'day', count: 1 };
+                    const intervalConfig = !isNaN(interval) ? { timeUnit: "minute", count: parseInt(interval) } : { timeUnit: { 'D': 'day', 'W': 'week', 'M': 'month' }[interval] || 'day', count: 1 };
                     xAxis.set("baseInterval", intervalConfig);
                     series.data.setAll(data.candles);
                     predictedSeries.data.setAll(data.predicted);
