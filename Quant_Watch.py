@@ -1,33 +1,32 @@
 # ==============================================================================
-# Candlestick Chart with AI Prediction (Flask, amCharts5) - PURE PYTHON VERSION
-# FINAL VERSION with Voice Commands, Auto-Parsing, and TTS Threading Fix
+# Candlestick Chart with AI Prediction (Flask, amCharts5) - TERMUX VERSION
 # ==============================================================================
-# This single-file Python project runs a Flask web server and a concurrent
-# terminal-based voice assistant.
+# This version is MODIFIED to run on Termux by replacing PyAudio with the
+# native Termux-API for microphone access. All other functions are unchanged.
 #
-# Voice Feature:
-# - Say a crypto pair name (e.g., "Bitcoin", "BTC", "beat till cee").
+# Voice Feature (Termux):
+# - When the script says "Listening...", Termux will record audio for 5 seconds.
+# - Speak a crypto pair name (e.g., "Bitcoin", "BTC", "beat till cee").
 # - The program auto-corrects it to the nearest valid ticker ("BTC").
 # - It then analyzes the USDT pair (BTCUSDT) on a 1-hour timeframe with
 #   20 prediction candles.
 # - The analysis summary is spoken back to you via text-to-speech.
 #
-# Core Libraries:
-# - Flask, requests, math, statistics: For the web chart and analysis.
-# - threading: To run the voice listener without blocking the web server.
-# - SpeechRecognition: For converting your voice to text.
-# - pyttsx3: For converting the analysis text back to speech.
-# - thefuzz: For fuzzy string matching to auto-correct ticker names.
+# How to Run on Termux:
+# 1. Install Termux and Termux:API from a source like F-Droid.
 #
-# How to Run:
-# 1. Install dependencies:
-#    pip install Flask requests speechrecognition pyttsx3 "thefuzz[speedup]" PyAudio
+# 2. In your Termux shell, install the required packages:
+#    pkg update && pkg upgrade
+#    pkg install python termux-api espeak
+#    pip install Flask requests speechrecognition pyttsx3 "thefuzz[speedup]"
 #
-# 2. Run the Python script:
+# 3. Grant microphone permissions to the Termux:API app.
+#
+# 4. Run this Python script:
 #    python your_script_name.py
 #
-# 3. Access the web chart: http://127.0.0.1:5000
-# 4. Speak commands into your microphone while the terminal is running.
+# 5. Access the web chart in your phone's browser: http://localhost:5000
+# 6. Speak commands when the terminal prompts you to listen.
 # ==============================================================================
 
 import time
@@ -35,9 +34,11 @@ import requests
 import math
 import statistics
 import threading
+import os
+import subprocess
 from flask import Flask, jsonify, render_template_string, request
 
-# --- Voice and Parsing Libraries ---
+# --- Voice and Parsing Libraries (Termux modification) ---
 try:
     import speech_recognition as sr
     import pyttsx3
@@ -46,7 +47,9 @@ try:
 except ImportError:
     print("="*50)
     print("WARNING: Voice command libraries not found.")
-    print("Please run: pip install speechrecognition pyttsx3 \"thefuzz[speedup]\" PyAudio")
+    print("Please run: pip install speechrecognition pyttsx3 \"thefuzz[speedup]\"")
+    print("Also ensure 'espeak' and 'termux-api' are installed in Termux:")
+    print("pkg install espeak termux-api")
     print("Voice features will be disabled.")
     print("="*50)
     VOICE_ENABLED = False
@@ -345,7 +348,7 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# --- Data Fetching & Caching ---
+# --- Data Fetching & Caching (UNMODIFIED) ---
 def get_bybit_data(symbol, interval):
     """Fetches candlestick data from the Bybit v5 API with in-memory caching."""
     cache_key = f"{symbol}-{interval}"
@@ -367,7 +370,7 @@ def get_bybit_data(symbol, interval):
     except requests.exceptions.RequestException as e: raise ConnectionError(f"Failed to connect to Bybit API: {e}")
     except (ValueError, KeyError) as e: raise ValueError(f"Error processing Bybit response: {e}")
 
-# --- Prediction Model (Pure Python) ---
+# --- Prediction Model (Pure Python, UNMODIFIED) ---
 def find_similar_patterns_pure_python(data_series, window_size=20, top_n=5):
     """
     Finds historical patterns similar to the most recent one using cosine similarity.
@@ -424,7 +427,7 @@ def predict_next_candles(candles_data, num_predictions=5):
         predictions.append({"t": new_ts, "o": pred_open, "h": pred_high, "l": pred_low, "c": predicted_close})
     return predictions
 
-# --- VOICE COMMAND & AUTO-PARSING FUNCTIONS (with TTS threading fix) ---
+# --- VOICE COMMAND FUNCTIONS (UNMODIFIED LOGIC, MODIFIED INPUT METHOD) ---
 
 def speak(text):
     """
@@ -433,11 +436,9 @@ def speak(text):
     """
     try:
         print(f"Speaking: {text}")
-        # Create a new engine instance for each speech act
         engine = pyttsx3.init()
         engine.say(text)
         engine.runAndWait()
-        # It's good practice to stop the engine after use
         engine.stop()
     except Exception as e:
         print(f"Error in TTS engine: {e}")
@@ -452,13 +453,12 @@ def get_all_bybit_tickers():
         response.raise_for_status()
         data = response.json()
         if data.get("retCode") == 0:
-            # Extract the base asset (e.g., 'BTC' from 'BTCUSDT')
             symbols = [
                 item['symbol'].replace('USDT', '')
                 for item in data['result']['list']
                 if item['symbol'].endswith('USDT')
             ]
-            VALID_TICKERS = list(set(symbols)) # Use set for uniqueness
+            VALID_TICKERS = list(set(symbols))
             print(f"Loaded {len(VALID_TICKERS)} tickers for auto-correction.")
         else:
             print(f"Warning: Could not fetch tickers from Bybit: {data.get('retMsg')}")
@@ -470,21 +470,19 @@ def find_closest_ticker(text, ticker_list):
     """Finds the most similar ticker from a list using fuzzy matching."""
     if not ticker_list or not text:
         return None
-    # First, check for an exact match in the recognized text
     for ticker in ticker_list:
         if ticker.lower() in text.lower().split():
             return ticker
-    # If no exact match, use fuzzy matching
     best_match = fuzzy_process.extractOne(text, ticker_list)
-    if best_match and best_match[1] > 60: # Confidence threshold
+    if best_match and best_match[1] > 60:
         return best_match[0]
     return None
 
 def analyze_and_speak(ticker):
     """Performs the analysis and speaks the result."""
     symbol = f"{ticker}USDT"
-    interval = "60"  # 1 hour, as requested
-    num_predictions = 20 # 20 candles, as requested
+    interval = "60"
+    num_predictions = 20
     
     friendly_names = {"BTC": "Bitcoin", "ETH": "Ethereum", "SOL": "Solana"}
     ticker_name = friendly_names.get(ticker, ticker)
@@ -502,7 +500,6 @@ def analyze_and_speak(ticker):
             speak(f"Sorry, I was unable to generate a prediction for {ticker_name}.")
             return
 
-        # --- Generate Summary ---
         last_price = float(raw_candles[-1][4])
         predicted_closes = [p['c'] for p in predicted_candles]
         final_predicted_price = predicted_closes[-1]
@@ -527,27 +524,52 @@ def analyze_and_speak(ticker):
         print(f"An error occurred during analysis: {e}")
         speak(f"Sorry, an error occurred while analyzing {ticker_name}.")
 
-
+# ==============================================================================
+# === MODIFIED VOICE LOOP FOR TERMUX ===
+# ==============================================================================
 def voice_command_loop():
     """
-    The main loop for listening to voice commands.
-    This version is corrected to avoid TTS threading issues.
+    The main loop for listening to voice commands, modified for Termux.
+    Uses 'termux-microphone-record' instead of PyAudio.
     """
     recognizer = sr.Recognizer()
-    microphone = sr.Microphone()
-    
-    with microphone as source:
-        print("Calibrating for ambient noise, please wait...")
-        recognizer.adjust_for_ambient_noise(source, duration=1)
+    temp_audio_file = "temp_voice_input.wav"
 
-    print("\n🚀 Voice Assistant is Ready! 🚀")
+    # Check if the termux-api command is available before starting
+    try:
+        subprocess.run(['command', '-v', 'termux-microphone-record'], check=True, capture_output=True, text=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("="*50)
+        print("FATAL ERROR: 'termux-microphone-record' command not found.")
+        print("This script's voice features require the Termux:API package.")
+        print("Please run 'pkg install termux-api' in your Termux shell,")
+        print("and ensure the Termux:API app is installed and has permissions.")
+        print("Voice assistant will not start.")
+        print("="*50)
+        return # Exit the function entirely
+
+    print("\n🚀 Voice Assistant is Ready! (Termux Mode) 🚀")
     speak("Voice assistant is online.")
 
     while True:
         try:
-            with microphone as source:
-                print("\nListening for a crypto pair...")
-                audio = recognizer.listen(source, timeout=5, phrase_time_limit=5)
+            print("\nListening... (Recording for 5 seconds via Termux API)")
+            
+            # Use Termux-API to record audio to a file
+            record_process = subprocess.run(
+                ['termux-microphone-record', '-f', temp_audio_file, '-l', '5'],
+                capture_output=True, text=True, timeout=10 # 10-second safety timeout
+            )
+
+            if record_process.returncode != 0:
+                print(f"Error during microphone recording: {record_process.stderr}")
+                speak("I had a problem with the microphone.")
+                time.sleep(2)
+                continue
+
+            # Process the recorded audio file using SpeechRecognition
+            with sr.AudioFile(temp_audio_file) as source:
+                audio = recognizer.record(source)
 
             print("Recognizing...")
             text = recognizer.recognize_google(audio)
@@ -561,18 +583,22 @@ def voice_command_loop():
             else:
                 speak("Sorry, I could not recognize that crypto pair. Please try again.")
 
-        except sr.WaitTimeoutError:
-            pass
         except sr.UnknownValueError:
             print("Could not understand audio. Please speak clearly.")
         except sr.RequestError as e:
             print(f"Could not request results from Google Speech Recognition service; {e}")
             speak("Sorry, the speech service is currently unavailable.")
+        except FileNotFoundError:
+             print("The temporary audio file was not found. Recording might have failed.")
         except Exception as e:
             print(f"An unexpected error occurred in the voice loop: {e}")
             time.sleep(2)
+        finally:
+            # Clean up the temporary audio file to save space
+            if os.path.exists(temp_audio_file):
+                os.remove(temp_audio_file)
 
-# --- Flask Routes ---
+# --- Flask Routes (UNMODIFIED) ---
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
@@ -598,14 +624,9 @@ def api_candles():
 # --- Main Execution ---
 if __name__ == '__main__':
     if VOICE_ENABLED:
-        # Fetch the ticker list for auto-parsing
         get_all_bybit_tickers()
-        
-        # Start the voice command listener in a separate thread
-        # daemon=True ensures the thread exits when the main program does
         voice_thread = threading.Thread(target=voice_command_loop, daemon=True)
         voice_thread.start()
     
-    # Start the Flask web server in the main thread
-    # Use debug=False when threading to avoid conflicts and duplicate runs.
+    # Use localhost for Termux, accessible from the device's browser
     app.run(host='0.0.0.0', port=5000, debug=False)
