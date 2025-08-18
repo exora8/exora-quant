@@ -378,7 +378,6 @@ def speak(text):
     """Menggunakan Termux-API untuk mengucapkan teks dengan suara Bahasa Indonesia."""
     print(f"Mengucapkan: {text}")
     try:
-        # Menggunakan flag '-l id-ID' untuk bahasa Indonesia
         subprocess.run(['termux-tts-speak', '-l', 'id-ID', text], check=True)
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         print(f"Error dengan termux-tts-speak: {e}")
@@ -473,8 +472,14 @@ def voice_command_loop():
 
     while True:
         try:
-            print("\nMendengarkan nama pasangan kripto melalui Termux API...")
+            # --- PENJELASAN DURASI MENDENGARKAN ---
+            # Durasi mendengarkan diatur oleh sistem Android, bukan oleh skrip.
+            # Android akan berhenti mendengarkan secara otomatis setelah Anda berhenti berbicara
+            # selama beberapa saat. Tidak ada cara untuk memperpanjangnya dari dalam skrip.
+            print("\nMendengarkan... Ucapkan perintah setelah pop-up muncul. Sistem akan berhenti merekam setelah Anda diam.")
             
+            # Memanggil API Termux untuk pengenalan suara.
+            # Tidak ada parameter untuk mengatur durasi secara manual.
             result = subprocess.run(
                 ['termux-speech-to-text'],
                 capture_output=True, text=True, check=True
