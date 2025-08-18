@@ -1,5 +1,6 @@
 # ==============================================================================
 # Candlestick Chart with AI Prediction (Flask, amCharts5) - TERMUX VERSION
+# FINAL FIX: Uses absolute path for termux-api command to solve PATH issues.
 # ==============================================================================
 # This version is MODIFIED to run on Termux by replacing PyAudio with the
 # native Termux-API for microphone access. All other functions are unchanged.
@@ -427,13 +428,8 @@ def predict_next_candles(candles_data, num_predictions=5):
         predictions.append({"t": new_ts, "o": pred_open, "h": pred_high, "l": pred_low, "c": predicted_close})
     return predictions
 
-# --- VOICE COMMAND FUNCTIONS (UNMODIFIED LOGIC, MODIFIED INPUT METHOD) ---
-
+# --- VOICE COMMAND FUNCTIONS (UNMODIFIED LOGIC) ---
 def speak(text):
-    """
-    Creates a new TTS engine instance for each call to avoid threading issues.
-    This is the corrected function.
-    """
     try:
         print(f"Speaking: {text}")
         engine = pyttsx3.init()
@@ -444,7 +440,6 @@ def speak(text):
         print(f"Error in TTS engine: {e}")
 
 def get_all_bybit_tickers():
-    """Fetches all USDT spot tickers from Bybit for the auto-parser."""
     global VALID_TICKERS
     print("Fetching available tickers from Bybit for auto-parsing...")
     try:
@@ -453,11 +448,7 @@ def get_all_bybit_tickers():
         response.raise_for_status()
         data = response.json()
         if data.get("retCode") == 0:
-            symbols = [
-                item['symbol'].replace('USDT', '')
-                for item in data['result']['list']
-                if item['symbol'].endswith('USDT')
-            ]
+            symbols = [item['symbol'].replace('USDT', '') for item in data['result']['list'] if item['symbol'].endswith('USDT')]
             VALID_TICKERS = list(set(symbols))
             print(f"Loaded {len(VALID_TICKERS)} tickers for auto-correction.")
         else:
@@ -467,86 +458,69 @@ def get_all_bybit_tickers():
         print("Auto-parsing might be less effective.")
 
 def find_closest_ticker(text, ticker_list):
-    """Finds the most similar ticker from a list using fuzzy matching."""
-    if not ticker_list or not text:
-        return None
+    if not ticker_list or not text: return None
     for ticker in ticker_list:
-        if ticker.lower() in text.lower().split():
-            return ticker
+        if ticker.lower() in text.lower().split(): return ticker
     best_match = fuzzy_process.extractOne(text, ticker_list)
-    if best_match and best_match[1] > 60:
-        return best_match[0]
+    if best_match and best_match[1] > 60: return best_match[0]
     return None
 
 def analyze_and_speak(ticker):
-    """Performs the analysis and speaks the result."""
     symbol = f"{ticker}USDT"
     interval = "60"
     num_predictions = 20
-    
     friendly_names = {"BTC": "Bitcoin", "ETH": "Ethereum", "SOL": "Solana"}
     ticker_name = friendly_names.get(ticker, ticker)
-
     print(f"Analyzing {symbol} on {interval}m timeframe with {num_predictions} predictions...")
-    
     try:
         raw_candles = get_bybit_data(symbol, interval)
         if not raw_candles:
             speak(f"Sorry, I could not find any data for {ticker_name}.")
             return
-
         predicted_candles = predict_next_candles(raw_candles, num_predictions)
         if not predicted_candles:
             speak(f"Sorry, I was unable to generate a prediction for {ticker_name}.")
             return
-
         last_price = float(raw_candles[-1][4])
         predicted_closes = [p['c'] for p in predicted_candles]
         final_predicted_price = predicted_closes[-1]
-        
         direction = "rise" if final_predicted_price > last_price else "drop"
         percent_change = abs((final_predicted_price - last_price) / last_price * 100)
-        
         combined_prices = [float(c[4]) for c in raw_candles[-10:]] + predicted_closes
         consolidation_low = min(combined_prices)
         consolidation_high = max(combined_prices)
-        
         summary = (
             f"Okay, on {ticker_name} on the 1 hour timeframe, the price is likely to {direction} "
             f"by around {percent_change:.2f}% from the latest price of {last_price:,.2f}. "
             f"It may consolidate around {consolidation_low:,.2f} and {consolidation_high:,.2f} "
             f"before continuing its {direction if direction == 'rise' else 'downward'} move."
         )
-        
         speak(summary)
-
     except Exception as e:
         print(f"An error occurred during analysis: {e}")
         speak(f"Sorry, an error occurred while analyzing {ticker_name}.")
 
 # ==============================================================================
-# === MODIFIED VOICE LOOP FOR TERMUX ===
+# === MODIFIED VOICE LOOP FOR TERMUX (WITH ABSOLUTE PATH FIX) ===
 # ==============================================================================
 def voice_command_loop():
-    """
-    The main loop for listening to voice commands, modified for Termux.
-    Uses 'termux-microphone-record' instead of PyAudio.
-    """
     recognizer = sr.Recognizer()
     temp_audio_file = "temp_voice_input.wav"
+    
+    # --- THIS IS THE FIX ---
+    # Use the full, absolute path to the Termux command
+    termux_mic_command = "/data/data/com.termux/files/usr/bin/termux-microphone-record"
 
-    # Check if the termux-api command is available before starting
-    try:
-        subprocess.run(['command', '-v', 'termux-microphone-record'], check=True, capture_output=True, text=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    # Check if the termux-api command is available at the specified path
+    if not os.path.exists(termux_mic_command):
         print("="*50)
-        print("FATAL ERROR: 'termux-microphone-record' command not found.")
+        print(f"FATAL ERROR: Command not found at '{termux_mic_command}'.")
         print("This script's voice features require the Termux:API package.")
         print("Please run 'pkg install termux-api' in your Termux shell,")
         print("and ensure the Termux:API app is installed and has permissions.")
         print("Voice assistant will not start.")
         print("="*50)
-        return # Exit the function entirely
+        return
 
     print("\n🚀 Voice Assistant is Ready! (Termux Mode) 🚀")
     speak("Voice assistant is online.")
@@ -555,10 +529,10 @@ def voice_command_loop():
         try:
             print("\nListening... (Recording for 5 seconds via Termux API)")
             
-            # Use Termux-API to record audio to a file
+            # Use the full path in the subprocess call
             record_process = subprocess.run(
-                ['termux-microphone-record', '-f', temp_audio_file, '-l', '5'],
-                capture_output=True, text=True, timeout=10 # 10-second safety timeout
+                [termux_mic_command, '-f', temp_audio_file, '-l', '5'],
+                capture_output=True, text=True, timeout=10
             )
 
             if record_process.returncode != 0:
@@ -567,7 +541,6 @@ def voice_command_loop():
                 time.sleep(2)
                 continue
 
-            # Process the recorded audio file using SpeechRecognition
             with sr.AudioFile(temp_audio_file) as source:
                 audio = recognizer.record(source)
 
@@ -594,7 +567,6 @@ def voice_command_loop():
             print(f"An unexpected error occurred in the voice loop: {e}")
             time.sleep(2)
         finally:
-            # Clean up the temporary audio file to save space
             if os.path.exists(temp_audio_file):
                 os.remove(temp_audio_file)
 
@@ -628,5 +600,4 @@ if __name__ == '__main__':
         voice_thread = threading.Thread(target=voice_command_loop, daemon=True)
         voice_thread.start()
     
-    # Use localhost for Termux, accessible from the device's browser
     app.run(host='0.0.0.0', port=5000, debug=False)
