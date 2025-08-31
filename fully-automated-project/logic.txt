@@ -1,0 +1,4 @@
+logic : 
+
+the AI will analyze per 1 candle on the timeframe set on settings, so if the timeframe set on 1 hour timeframe new candle appear every 1 hour the AI will analyze every 1 hour too
+to check is the position is it still valid or not if the position is on profit side but the new analysis show the position will goes to minus again or hit the sl the AI will close the position
