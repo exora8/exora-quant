@@ -1,10 +1,10 @@
 # ==============================================================================
-# Exora Quant AI - v3.5 with Correct Trading Logic
+# Exora Quant AI - v3.7 with Race Condition Fix
 # ==============================================================================
-# This version fixes a critical bug in the position closing logic for both
-# manual and automatic trading. It also replaces the placeholder `trade_bot_worker`
-# with a fully functional, live auto-trading engine that mirrors the
-# backtester's strategy.
+# This version fixes a critical race condition bug that caused the bot to crash
+# with a KeyError if a position was closed manually while the bot was in the
+# middle of its analysis loop. The position check and data retrieval are now
+# an atomic operation to ensure stability.
 # ==============================================================================
 
 import time
@@ -27,6 +27,7 @@ BYBIT_API_URL = "https://api.bybit.com/v5/market"
 BINGX_API_URL = "https://open-api.bingx.com"
 SETTINGS_FILE = "settings.json"
 TRADELIST_FILE = "tradelist.json"
+TRADE_COOLDOWN_SECONDS = 300 # 5 minutes
 
 # --- Helper functions for JSON persistence ---
 def load_from_json(filename, default_data):
@@ -50,7 +51,7 @@ SETTINGS = load_from_json(SETTINGS_FILE, {
 })
 TRADE_LIST = load_from_json(TRADELIST_FILE, [])
 BOT_STATUS = {}
-ACTIVE_POSITIONS = {} # Format: { 'item_id': {'symbol': 'BTCUSDT', ...} }
+ACTIVE_POSITIONS = {}
 
 # --- Thread-safe Locks ---
 settings_lock = threading.Lock()
@@ -63,20 +64,16 @@ app = Flask(__name__)
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-# --- HTML & JavaScript Template (Unchanged from v3.4) ---
+# --- HTML & JavaScript Template (Unchanged) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Exora Quant AI v3.5</title>
+    <title>Exora Quant AI v3.7</title>
     <style>
-        html, body {
-            width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background-color: #000; color: #eee; font-size: 14px;
-        }
+        html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #000; color: #eee; font-size: 14px; }
         #chartdiv { width: 100%; height: calc(100% - 250px); }
         .controls-wrapper { position: absolute; top: 15px; left: 15px; z-index: 100; display: flex; align-items: flex-start; gap: 10px; }
         #toggle-controls-btn { width: 40px; height: 40px; padding: 0; font-size: 20px; border-radius: 8px; border: 1px solid #444; background-color: rgba(25, 25, 25, 0.85); color: #eee; cursor: pointer; backdrop-filter: blur(5px); display: flex; align-items: center; justify-content: center; }
@@ -100,65 +97,21 @@ HTML_TEMPLATE = """
         #trade-list-table th, #trade-list-table td { padding: 8px; text-align: left; border-bottom: 1px solid #222; font-size: 13px; }
         #trade-list-table th { color: #aaa; }
         .manual-trade-btn { padding: 4px 8px; font-size: 12px; margin-right: 4px; border-radius: 4px; }
-        .long-btn { background-color: #28a745; border-color: #28a745; }
-        .short-btn { background-color: #dc3545; border-color: #dc3545; }
-        .close-btn { background-color: #ffc107; border-color: #ffc107; color: #000; }
-        .remove-btn { background-color: #6c757d; border-color: #6c757d; padding: 4px 8px; font-size: 12px; }
-        
-        #backtest-panel { width: 450px; display: flex; flex-direction: column; }
-        #backtest-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; }
-        #backtest-controls input[type="date"] { width: 130px; }
-        #run-backtest-btn { background-color: #17a2b8; border-color: #17a2b8; }
-        #backtest-results { flex-grow: 1; overflow-y: auto; display: none; }
-        #equitychartdiv { width: 100%; height: 100px; margin-bottom: 10px; transition: height 0.3s ease-in-out; }
-        #backtest-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px 15px; margin-bottom: 10px; font-size: 12px; }
-        #backtest-stats div > span { font-weight: bold; color: #00aaff; }
-        #backtest-trades-table { width: 100%; font-size: 11px; }
-        #toggle-backtest-size-btn { float: right; background: #333; border: 1px solid #555; color: #ccc; cursor: pointer; padding: 1px 7px; font-size: 16px; border-radius: 4px; line-height: 1; }
-        .panels-container.is-maximized { height: calc(100% - 40px); }
-        .panels-container.is-maximized #chartdiv { height: 40px; }
-        .panels-container.is-maximized #settings-panel, .panels-container.is-maximized #tradelist-panel { display: none; }
-        .panels-container.is-maximized #backtest-panel { width: 100%; }
-        .panels-container.is-maximized #backtest-results { height: calc(100% - 60px); }
-        .panels-container.is-maximized #equitychartdiv { height: 300px; }
-        .panels-container.is-maximized #backtest-trades-table-container { flex-grow: 1; }
+        .long-btn { background-color: #28a745; border-color: #28a745; } .short-btn { background-color: #dc3545; border-color: #dc3545; } .close-btn { background-color: #ffc107; border-color: #ffc107; color: #000; } .remove-btn { background-color: #6c757d; border-color: #6c757d; padding: 4px 8px; font-size: 12px; }
+        #backtest-panel { width: 450px; display: flex; flex-direction: column; } #backtest-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; } #backtest-controls input[type="date"] { width: 130px; } #run-backtest-btn { background-color: #17a2b8; border-color: #17a2b8; } #backtest-results { flex-grow: 1; overflow-y: auto; display: none; } #equitychartdiv { width: 100%; height: 100px; margin-bottom: 10px; transition: height 0.3s ease-in-out; } #backtest-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px 15px; margin-bottom: 10px; font-size: 12px; } #backtest-stats div > span { font-weight: bold; color: #00aaff; } #backtest-trades-table { width: 100%; font-size: 11px; } #toggle-backtest-size-btn { float: right; background: #333; border: 1px solid #555; color: #ccc; cursor: pointer; padding: 1px 7px; font-size: 16px; border-radius: 4px; line-height: 1; }
+        .panels-container.is-maximized { height: calc(100% - 40px); } .panels-container.is-maximized #chartdiv { height: 40px; } .panels-container.is-maximized #settings-panel, .panels-container.is-maximized #tradelist-panel { display: none; } .panels-container.is-maximized #backtest-panel { width: 100%; } .panels-container.is-maximized #backtest-results { height: calc(100% - 60px); } .panels-container.is-maximized #equitychartdiv { height: 300px; } .panels-container.is-maximized #backtest-trades-table-container { flex-grow: 1; }
     </style>
-    <script src="https://cdn.amcharts.com/lib/5/index.js"></script>
-    <script src="https://cdn.amcharts.com/lib/5/xy.js"></script>
-    <script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script>
-    <script src="https://cdn.amcharts.com/lib/5/themes/Dark.js"></script>
+    <script src="https://cdn.amcharts.com/lib/5/index.js"></script><script src="https://cdn.amcharts.com/lib/5/xy.js"></script><script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script><script src="https://cdn.amcharts.com/lib/5/themes/Dark.js"></script>
 </head>
 <body>
     <div id="chartdiv"></div><div class="controls-wrapper"><button id="toggle-controls-btn" title="Toggle Controls">☰</button><div class="controls-overlay"><label for="symbol">Symbol:</label><input type="text" id="symbol" value="BTCUSDT"><label for="interval">Timeframe:</label><select id="interval"><option value="60">1 hour</option><option value="240">4 hours</option><option value="D">Daily</option></select><label for="num_predictions">Predictions:</label><input type="number" id="num_predictions" value="20" min="1" max="50"><button id="fetchButton">Fetch</button><button id="add-to-list-btn" class="add-btn">Add to Trade List</button><div id="status"></div></div></div>
-    <div class="panels-container">
-        <div id="settings-panel" class="panel"><h3>Settings</h3><div class="setting-item"><label for="api-key">API Key:</label><input type="text" id="api-key"></div><div class="setting-item"><label for="secret-key">Secret Key:</label><input type="password" id="secret-key"></div><div class="setting-item"><label for="mode">Mode:</label><select id="mode"><option value="demo">Demo</option><option value="live">Live</option></select></div><div class="setting-item"><label for="risk-usdt">Risk (USDT):</label><input type="number" id="risk-usdt" value="10"></div><div class="setting-item"><label for="leverage">Leverage:</label><input type="number" id="leverage" value="10"></div><button id="save-settings-btn">Save Settings</button></div>
-        <div id="tradelist-panel" class="panel"><h3>Live Trade List</h3><table id="trade-list-table"><thead><tr><th>Symbol</th><th>Timeframe</th><th>Status</th><th>PnL</th><th>Manual Control</th></tr></thead><tbody></tbody></table></div>
-        <div id="backtest-panel" class="panel"><h3>Backtest <button id="toggle-backtest-size-btn" title="Maximize">□</button></h3><div id="backtest-controls"><input type="text" id="backtest-symbol" value="BTCUSDT"><select id="backtest-interval"><option value="60">1 hour</option><option value="240">4 hours</option><option value="D">Daily</option></select><input type="date" id="backtest-start"><input type="date" id="backtest-end"><button id="run-backtest-btn">Run</button><div id="backtest-status" style="color: #ffc107;"></div></div><div id="backtest-results"><div id="equitychartdiv"></div><div id="backtest-stats"></div><div id="backtest-trades-table-container" style="height: 80px; overflow-y: auto;"><table id="backtest-trades-table" class="trade-list-table"><thead><tr><th>Exit Time</th><th>Side</th><th>PnL</th><th>Return %</th><th>Reason</th></tr></thead><tbody></tbody></table></div></div></div>
-    </div>
+    <div class="panels-container"><div id="settings-panel" class="panel"><h3>Settings</h3><div class="setting-item"><label for="api-key">API Key:</label><input type="text" id="api-key"></div><div class="setting-item"><label for="secret-key">Secret Key:</label><input type="password" id="secret-key"></div><div class="setting-item"><label for="mode">Mode:</label><select id="mode"><option value="demo">Demo</option><option value="live">Live</option></select></div><div class="setting-item"><label for="risk-usdt">Risk (USDT):</label><input type="number" id="risk-usdt" value="10"></div><div class="setting-item"><label for="leverage">Leverage:</label><input type="number" id="leverage" value="10"></div><button id="save-settings-btn">Save Settings</button></div><div id="tradelist-panel" class="panel"><h3>Live Trade List</h3><table id="trade-list-table"><thead><tr><th>Symbol</th><th>Timeframe</th><th>Status</th><th>PnL</th><th>Manual Control</th></tr></thead><tbody></tbody></table></div><div id="backtest-panel" class="panel"><h3>Backtest <button id="toggle-backtest-size-btn" title="Maximize">□</button></h3><div id="backtest-controls"><input type="text" id="backtest-symbol" value="BTCUSDT"><select id="backtest-interval"><option value="60">1 hour</option><option value="240">4 hours</option><option value="D">Daily</option></select><input type="date" id="backtest-start"><input type="date" id="backtest-end"><button id="run-backtest-btn">Run</button><div id="backtest-status" style="color: #ffc107;"></div></div><div id="backtest-results"><div id="equitychartdiv"></div><div id="backtest-stats"></div><div id="backtest-trades-table-container" style="height: 80px; overflow-y: auto;"><table id="backtest-trades-table" class="trade-list-table"><thead><tr><th>Exit Time</th><th>Side</th><th>PnL</th><th>Return %</th><th>Reason</th></tr></thead><tbody></tbody></table></div></div></div></div>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     let root, chart, equityRoot;
     async function manualTrade(side, symbol, id) { if (!confirm(`Are you sure you want to place a manual ${side.toUpperCase()} order for ${symbol}?`)) return; try { const response = await fetch('/api/manual_trade', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ side, symbol, id }) }); const result = await response.json(); alert(result.message || result.error); } catch (error) { alert(`Error placing manual trade: ${error}`); } }
     async function manualClose(symbol, id) { if (!confirm(`Are you sure you want to close the position for ${symbol}?`)) return; try { const response = await fetch('/api/manual_close', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ symbol, id }) }); const result = await response.json(); alert(result.message || result.error); } catch (error) { alert(`Error closing position: ${error}`); } }
-    async function refreshTradeList() {
-        const response = await fetch('/api/trade_list'); const { trade_list, bot_status } = await response.json();
-        const tableBody = document.querySelector('#trade-list-table tbody'); tableBody.innerHTML = '';
-        trade_list.forEach(item => {
-            const status = bot_status[item.id] || { message: "Initializing...", color: "#fff" };
-            let pnlCell = '<td>-</td>';
-            if (status.pnl !== undefined) {
-                const pnl = status.pnl; const pnl_pct = status.pnl_pct;
-                const pnlColor = pnl > 0 ? '#28a745' : (pnl < 0 ? '#dc3545' : '#fff');
-                pnlCell = `<td style="color: ${pnlColor}; font-weight: bold;">${pnl.toFixed(2)} <span style="font-size:0.8em; opacity: 0.8;">(${pnl_pct.toFixed(2)}%)</span></td>`;
-            }
-            const row = `<tr><td>${item.symbol}</td><td>${item.interval_text}</td><td style="color:${status.color}">${status.message}</td>${pnlCell}<td><button class="manual-trade-btn long-btn" data-id="${item.id}" data-symbol="${item.symbol}">Long</button><button class="manual-trade-btn short-btn" data-id="${item.id}" data-symbol="${item.symbol}">Short</button><button class="manual-trade-btn close-btn" data-id="${item.id}" data-symbol="${item.symbol}">Close</button><button class="remove-btn" data-id="${item.id}">X</button></td></tr>`;
-            tableBody.insertAdjacentHTML('beforeend', row);
-        });
-        document.querySelectorAll('.remove-btn').forEach(btn => { btn.addEventListener('click', () => removeTradeItem(btn.dataset.id)); });
-        document.querySelectorAll('.long-btn').forEach(btn => { btn.addEventListener('click', () => manualTrade('long', btn.dataset.symbol, btn.dataset.id)); });
-        document.querySelectorAll('.short-btn').forEach(btn => { btn.addEventListener('click', () => manualTrade('short', btn.dataset.symbol, btn.dataset.id)); });
-        document.querySelectorAll('.close-btn').forEach(btn => { btn.addEventListener('click', () => manualClose(btn.dataset.symbol, btn.dataset.id)); });
-    };
+    async function refreshTradeList() { const response = await fetch('/api/trade_list'); const { trade_list, bot_status } = await response.json(); const tableBody = document.querySelector('#trade-list-table tbody'); tableBody.innerHTML = ''; trade_list.forEach(item => { const status = bot_status[item.id] || { message: "Initializing...", color: "#fff" }; let pnlCell = '<td>-</td>'; if (status.pnl !== undefined) { const pnl = status.pnl; const pnl_pct = status.pnl_pct; const pnlColor = pnl > 0 ? '#28a745' : (pnl < 0 ? '#dc3545' : '#fff'); pnlCell = `<td style="color: ${pnlColor}; font-weight: bold;">${pnl.toFixed(2)} <span style="font-size:0.8em; opacity: 0.8;">(${pnl_pct.toFixed(2)}%)</span></td>`; } const row = `<tr><td>${item.symbol}</td><td>${item.interval_text}</td><td style="color:${status.color}">${status.message}</td>${pnlCell}<td><button class="manual-trade-btn long-btn" data-id="${item.id}" data-symbol="${item.symbol}">Long</button><button class="manual-trade-btn short-btn" data-id="${item.id}" data-symbol="${item.symbol}">Short</button><button class="manual-trade-btn close-btn" data-id="${item.id}" data-symbol="${item.symbol}">Close</button><button class="remove-btn" data-id="${item.id}">X</button></td></tr>`; tableBody.insertAdjacentHTML('beforeend', row); }); document.querySelectorAll('.remove-btn').forEach(btn => { btn.addEventListener('click', () => removeTradeItem(btn.dataset.id)); }); document.querySelectorAll('.long-btn').forEach(btn => { btn.addEventListener('click', () => manualTrade('long', btn.dataset.symbol, btn.dataset.id)); }); document.querySelectorAll('.short-btn').forEach(btn => { btn.addEventListener('click', () => manualTrade('short', btn.dataset.symbol, btn.dataset.id)); }); document.querySelectorAll('.close-btn').forEach(btn => { btn.addEventListener('click', () => manualClose(btn.dataset.symbol, btn.dataset.id)); }); };
     let xAxis, yAxis; function createMainChart() { if (root) root.dispose(); root = am5.Root.new("chartdiv"); root.setThemes([am5themes_Animated.new(root), am5themes_Dark.new(root)]); chart = root.container.children.push(am5xy.XYChart.new(root, { panX: true, wheelX: "panX", pinchZoomX: true })); chart.set("cursor", am5xy.XYCursor.new(root, { behavior: "panX" })).lineY.set("visible", false); xAxis = chart.xAxes.push(am5xy.DateAxis.new(root, { baseInterval: { timeUnit: "minute", count: 60 }, renderer: am5xy.AxisRendererX.new(root, { minGridDistance: 70 }) })); yAxis = chart.yAxes.push(am5xy.ValueAxis.new(root, { renderer: am5xy.AxisRendererY.new(root, {}) })); let series = chart.series.push(am5xy.CandlestickSeries.new(root, { name: "Historical", xAxis: xAxis, yAxis: yAxis, valueXField: "t", openValueYField: "o", highValueYField: "h", lowValueYField: "l", valueYField: "c" })); let predictedSeries = chart.series.push(am5xy.CandlestickSeries.new(root, { name: "Predicted", xAxis: xAxis, yAxis: yAxis, valueXField: "t", openValueYField: "o", highValueYField: "h", lowValueYField: "l", valueYField: "c" })); predictedSeries.columns.template.setAll({ fill: am5.color(0xaaaaaa), stroke: am5.color(0xaaaaaa) }); chart.set("scrollbarX", am5.Scrollbar.new(root, { orientation: "horizontal" })); };
     async function fetchChartData() { createMainChart(); const symbol = document.getElementById('symbol').value.toUpperCase().trim(); const interval = document.getElementById('interval').value; const numPredictions = document.getElementById('num_predictions').value; if (!symbol) { document.getElementById('status').innerText = 'Error: Symbol cannot be empty.'; return; } document.getElementById('status').innerText = 'Fetching chart data...'; try { const response = await fetch(`/api/candles?symbol=${symbol}&interval=${interval}&predictions=${numPredictions}`); if (!response.ok) throw new Error((await response.json()).error); const data = await response.json(); const intervalConfig = !isNaN(interval) ? { timeUnit: "minute", count: parseInt(interval) } : { timeUnit: { 'D': 'day', 'W': 'week', 'M': 'month' }[interval] || 'day', count: 1 }; xAxis.set("baseInterval", intervalConfig); chart.series.getIndex(0).data.setAll(data.candles); chart.series.getIndex(1).data.setAll(data.predicted); document.getElementById('status').innerText = 'Chart updated.'; } catch (error) { document.getElementById('status').innerText = `Error: ${error.message}`; } finally { setTimeout(() => { document.getElementById('status').innerText = ''; }, 3000); }};
     async function saveSettings() { const settings = { bingx_api_key: document.getElementById('api-key').value, bingx_secret_key: document.getElementById('secret-key').value, mode: document.getElementById('mode').value, risk_usdt: parseFloat(document.getElementById('risk-usdt').value), leverage: parseInt(document.getElementById('leverage').value) }; await fetch('/api/settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(settings) }); alert('Settings saved!'); };
@@ -170,7 +123,6 @@ document.addEventListener('DOMContentLoaded', function () {
     function displayBacktestResults(results) { document.getElementById('backtest-results').style.display = 'block'; const stats = results.metrics; const statsEl = document.getElementById('backtest-stats'); statsEl.innerHTML = `<div>Net Profit: <span style="color:${stats.net_profit > 0 ? '#28a745' : '#dc3545'}">${stats.net_profit.toFixed(2)} USDT</span></div><div>Win Rate: <span>${stats.win_rate.toFixed(2)}%</span></div><div>Profit Factor: <span>${stats.profit_factor.toFixed(2)}</span></div><div>Total Trades: <span>${stats.total_trades}</span></div><div>Avg Trade PnL: <span>${stats.avg_trade_pnl.toFixed(2)}</span></div><div>Max Drawdown: <span style="color:#dc3545">${stats.max_drawdown.toFixed(2)}%</span></div>`; const tradesTableBody = document.querySelector('#backtest-trades-table tbody'); tradesTableBody.innerHTML = ''; results.trades.forEach(trade => { const pnlColor = trade.pnl > 0 ? '#28a745' : '#dc3545'; const row = `<tr><td>${new Date(trade.exit_time).toLocaleString()}</td><td>${trade.direction}</td><td style="color:${pnlColor}">${trade.pnl.toFixed(2)}</td><td style="color:${pnlColor}">${trade.return_pct.toFixed(2)}%</td><td>${trade.exit_reason || 'N/A'}</td></tr>`; tradesTableBody.insertAdjacentHTML('afterbegin', row); }); createEquityChart(results.equity_curve); }
     function createEquityChart(data) { if (equityRoot) equityRoot.dispose(); equityRoot = am5.Root.new("equitychartdiv"); equityRoot.setThemes([am5themes_Dark.new(equityRoot)]); let chart = equityRoot.container.children.push(am5xy.XYChart.new(equityRoot, { panX: true, wheelX: "zoomX", pinchZoomX: true, paddingLeft: 0, paddingRight: 0 })); let xAxis = chart.xAxes.push(am5xy.DateAxis.new(equityRoot, { baseInterval: { timeUnit: "day", count: 1 }, renderer: am5xy.AxisRendererX.new(equityRoot, { minGridDistance: 50 }), })); let yAxis = chart.yAxes.push(am5xy.ValueAxis.new(equityRoot, { renderer: am5xy.AxisRendererY.new(equityRoot, {}) })); let series = chart.series.push(am5xy.LineSeries.new(equityRoot, { name: "Equity", xAxis: xAxis, yAxis: yAxis, valueYField: "equity", valueXField: "time", stroke: am5.color(0x00aaff), fill: am5.color(0x00aaff), })); series.fills.template.setAll({ fillOpacity: 0.1, visible: true }); series.data.setAll(data); }
     function initialize() { loadSettings(); refreshTradeList(); setInterval(refreshTradeList, 1000); const today = new Date(); const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1); const threeMonthsAgo = new Date(today); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3); document.getElementById('backtest-end').valueAsDate = yesterday; document.getElementById('backtest-start').valueAsDate = threeMonthsAgo; document.getElementById('toggle-controls-btn').addEventListener('click', () => document.querySelector('.controls-overlay').classList.toggle('hidden')); document.getElementById('fetchButton').addEventListener('click', fetchChartData); document.getElementById('add-to-list-btn').addEventListener('click', addTradeItem); document.getElementById('save-settings-btn').addEventListener('click', saveSettings); document.getElementById('run-backtest-btn').addEventListener('click', runBacktest); document.getElementById('toggle-backtest-size-btn').addEventListener('click', (e) => { const btn = e.target; const container = document.querySelector('.panels-container'); const chartContainer = document.getElementById('chartdiv'); container.classList.toggle('is-maximized'); if (container.classList.contains('is-maximized')) { btn.textContent = '−'; btn.title = "Minimize"; chartContainer.style.height = '40px'; } else { btn.textContent = '□'; btn.title = "Maximize"; chartContainer.style.height = 'calc(100% - 250px)'; } setTimeout(() => { if (equityRoot) { equityRoot.resize(); } if (root) { root.resize(); } }, 350); }); }
-    
     initialize();
 });
 </script>
@@ -179,68 +131,51 @@ document.addEventListener('DOMContentLoaded', function () {
 """
 
 # --- Data Fetching & Prediction (Unchanged) ---
-def get_bybit_data(symbol, interval, start_ts=None, end_ts=None):
-    params = {"category": "spot", "symbol": symbol, "interval": interval, "limit": 1000}
+def get_bybit_data(symbol, interval, start_ts=None, end_ts=None, limit=1000):
+    params = {"category": "spot", "symbol": symbol, "interval": interval, "limit": limit}
     if start_ts: params['start'] = int(start_ts)
     if end_ts: params['end'] = int(end_ts)
     try:
-        response = requests.get(f"{BYBIT_API_URL}/kline", params=params)
-        response.raise_for_status()
-        data = response.json()
+        response = requests.get(f"{BYBIT_API_URL}/kline", params=params); response.raise_for_status(); data = response.json()
         if data.get("retCode") != 0: raise ValueError(data.get("retMsg"))
         return list(reversed(data["result"]["list"]))
-    except Exception as e:
-        raise ConnectionError(f"Bybit kline API error: {e}")
+    except Exception as e: raise ConnectionError(f"Bybit kline API error: {e}")
 def get_bybit_ticker_data(symbols):
     if not isinstance(symbols, list): symbols = [symbols]
     if not symbols: return {}
     params = {"category": "spot", "symbol": ",".join(symbols)}
     try:
-        response = requests.get(f"{BYBIT_API_URL}/tickers", params=params)
-        response.raise_for_status()
-        data = response.json()
-        if data.get("retCode") == 0:
-            return {item['symbol']: float(item['lastPrice']) for item in data['result']['list']}
+        response = requests.get(f"{BYBIT_API_URL}/tickers", params=params); response.raise_for_status(); data = response.json()
+        if data.get("retCode") == 0: return {item['symbol']: float(item['lastPrice']) for item in data['result']['list']}
         return {}
-    except Exception as e:
-        app.logger.error(f"Bybit ticker API error: {e}")
-        return {}
+    except Exception as e: app.logger.error(f"Bybit ticker API error: {e}"); return {}
 def find_similar_patterns_pure_python(data_series, window_size=20, top_n=5):
     if len(data_series) < 2 * window_size: return None
     def dot_product(v1, v2): return sum(x * y for x, y in zip(v1, v2))
     def norm(v): return math.sqrt(sum(x * x for x in v))
-    current_pattern = data_series[-window_size:]
-    current_norm = norm(current_pattern)
+    current_pattern = data_series[-window_size:]; current_norm = norm(current_pattern)
     if current_norm == 0: return None
     similarities = []
     for i in range(len(data_series) - window_size):
-        historical_pattern = data_series[i : i + window_size]
-        historical_norm = norm(historical_pattern)
-        if historical_norm > 0:
-            similarity = dot_product(historical_pattern, current_pattern) / (historical_norm * current_norm)
-            similarities.append({"sim": similarity, "outcome_index": i + window_size})
+        historical_pattern = data_series[i : i + window_size]; historical_norm = norm(historical_pattern)
+        if historical_norm > 0: similarities.append({"sim": dot_product(historical_pattern, current_pattern) / (historical_norm * current_norm), "outcome_index": i + window_size})
     if not similarities: return None
     similarities.sort(key=lambda x: x["sim"], reverse=True)
     return statistics.mean(data_series[p["outcome_index"]] for p in similarities[:top_n])
 def predict_next_candles(candles_data, num_predictions=20):
     if len(candles_data) < 50: return []
     data = [[float(c[i]) for i in range(6)] for c in candles_data]
-    upper_wicks = [d[2] - max(d[1], d[4]) for d in data]
-    lower_wicks = [min(d[1], d[4]) - d[3] for d in data]
-    avg_upper_wick = statistics.mean(upper_wicks) if upper_wicks else 0
-    avg_lower_wick = statistics.mean(lower_wicks) if lower_wicks else 0
+    upper_wicks = [d[2] - max(d[1], d[4]) for d in data]; lower_wicks = [min(d[1], d[4]) - d[3] for d in data]
+    avg_upper_wick = statistics.mean(upper_wicks) if upper_wicks else 0; avg_lower_wick = statistics.mean(lower_wicks) if lower_wicks else 0
     predictions, current_candles = [], data[:]
     for i in range(num_predictions):
-        closes = [c[4] for c in current_candles]
-        log_returns = [math.log(closes[j]/closes[j-1]) for j in range(1,len(closes)) if closes[j-1]>0]
+        closes = [c[4] for c in current_candles]; log_returns = [math.log(closes[j]/closes[j-1]) for j in range(1,len(closes)) if closes[j-1]>0]
         if not log_returns: break
         predicted_log_return = find_similar_patterns_pure_python(log_returns)
         if predicted_log_return is None: break
-        last_close = current_candles[-1][4]
-        predicted_close = last_close * math.exp(predicted_log_return)
+        last_close = current_candles[-1][4]; predicted_close = last_close * math.exp(predicted_log_return)
         pred_o, pred_h, pred_l = last_close, max(last_close, predicted_close) + avg_upper_wick, min(last_close, predicted_close) - avg_lower_wick
-        interval_ms = int(current_candles[-1][0]) - int(current_candles[-2][0])
-        new_ts = int(current_candles[-1][0]) + interval_ms
+        interval_ms = int(current_candles[-1][0]) - int(current_candles[-2][0]); new_ts = int(current_candles[-1][0]) + interval_ms
         current_candles.append([new_ts, pred_o, pred_h, pred_l, predicted_close, 0])
         predictions.append({"t": new_ts, "o": pred_o, "h": pred_h, "l": pred_l, "c": predicted_close})
     return predictions
@@ -251,18 +186,11 @@ class BingXClient:
     def _sign(self, params_str): return hmac.new(self.secret_key.encode('utf-8'), params_str.encode('utf-8'), hashlib.sha256).hexdigest()
     def _request(self, method, path, params=None):
         if params is None: params = {}
-        params['timestamp'] = int(time.time() * 1000)
-        query_string = urlencode(params)
-        signature = self._sign(query_string)
-        url = f"{BINGX_API_URL}{path}?{query_string}&signature={signature}"
-        headers = {'X-BX-APIKEY': self.api_key}
+        params['timestamp'] = int(time.time() * 1000); query_string = urlencode(params); signature = self._sign(query_string)
+        url = f"{BINGX_API_URL}{path}?{query_string}&signature={signature}"; headers = {'X-BX-APIKEY': self.api_key}
         try:
-            response = requests.request(method.upper(), url, headers=headers)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            app.logger.error(f"BingX API request failed: {e.response.text if e.response else e}")
-            return None
+            response = requests.request(method.upper(), url, headers=headers); response.raise_for_status(); return response.json()
+        except requests.exceptions.RequestException as e: app.logger.error(f"BingX API request failed: {e.response.text if e.response else e}"); return None
     def place_order(self, symbol, side, position_side, quantity, leverage, tp_price=None, sl_price=None):
         if self.demo_mode:
             app.logger.info(f"[DEMO] Place {side} {position_side} order: {quantity} {symbol} @ {leverage}x")
@@ -275,69 +203,62 @@ class BingXClient:
         return self._request('POST', "/openApi/swap/v2/trade/order", params)
     def set_leverage(self, symbol, side, leverage): return self._request('POST', "/openApi/swap/v2/trade/leverage", {"symbol": symbol, "side": side, "leverage": leverage})
 
-# --- NEW: Fully Functional Auto-Trading Worker ---
+# --- CORRECTED & STABILIZED trade_bot_worker ---
 def trade_bot_worker():
     app.logger.info("Trading bot worker thread started.")
     while True:
-        time.sleep(30) # Check every 30 seconds
-        
-        with trade_list_lock:
-            trade_list_copy = list(TRADE_LIST)
-        
+        time.sleep(30)
+        with trade_list_lock: trade_list_copy = list(TRADE_LIST)
         with settings_lock:
             client = BingXClient(SETTINGS['bingx_api_key'], SETTINGS['bingx_secret_key'], SETTINGS['mode'] == 'demo')
-            risk = SETTINGS['risk_usdt']
-            leverage = SETTINGS['leverage']
+            risk, leverage = SETTINGS['risk_usdt'], SETTINGS['leverage']
 
         for item in trade_list_copy:
             try:
                 item_id, symbol, interval = item['id'], item['symbol'], item['interval']
                 
+                ### ATOMIC FIX: Get position data once at the start of the loop ###
                 with positions_lock:
-                    is_position_open = item_id in ACTIVE_POSITIONS
+                    position_data = ACTIVE_POSITIONS.get(item_id)
+                with status_lock:
+                    last_close_time = BOT_STATUS.get(item_id, {}).get('last_close_time', 0)
 
                 raw_candles = get_bybit_data(symbol, interval, limit=50)
-                if len(raw_candles) < 50:
-                    app.logger.warning(f"Not enough candle data for {symbol}, skipping.")
-                    continue
-                
-                predicted_candles = predict_next_candles(raw_candles, 20)
-                if not predicted_candles:
-                    continue
+                if len(raw_candles) < 50: continue
+                predicted_candles = predict_next_candles(raw_candles)
+                if not predicted_candles: continue
 
                 current_price = float(raw_candles[-1][4])
                 final_predicted_price = predicted_candles[-1]['c']
                 price_change_pct = ((final_predicted_price - current_price) / current_price) * 100
 
                 # --- Position Management Logic ---
-                if is_position_open:
-                    with positions_lock:
-                        direction = ACTIVE_POSITIONS[item_id]['direction']
-                    
+                if position_data:
+                    direction = position_data['direction']
                     is_long = direction == 'long'
                     signal_reversed = (is_long and price_change_pct < -0.5) or (not is_long and price_change_pct > 0.5)
-
+                    
                     if signal_reversed:
                         app.logger.info(f"[AUTO-CLOSE] Signal reversed for {symbol}. Closing {direction} position.")
-                        with positions_lock:
-                            pos = ACTIVE_POSITIONS[item_id]
-                        
-                        # Use correct closing logic
-                        position_side = pos['direction'].upper() # LONG or SHORT
-                        order_side = "SELL" if pos['direction'] == 'long' else "BUY"
-                        
-                        res = client.place_order(symbol, order_side, position_side, pos['quantity'], leverage)
+                        position_side = direction.upper()
+                        order_side = "SELL" if is_long else "BUY"
+                        res = client.place_order(symbol, order_side, position_side, position_data['quantity'], leverage)
                         if res and res.get('code') == 0:
-                            app.logger.info(f"Successfully closed {symbol} position.")
+                            app.logger.info(f"Successfully auto-closed {symbol} position.")
                             with positions_lock, status_lock:
-                                del ACTIVE_POSITIONS[item_id]
-                                BOT_STATUS[item_id] = {"message": "Waiting...", "color": "#fff"}
+                                if item_id in ACTIVE_POSITIONS: del ACTIVE_POSITIONS[item_id]
+                                BOT_STATUS[item_id] = {"message": "Waiting...", "color": "#fff", "last_close_time": time.time()}
                         else:
                             app.logger.error(f"Failed to auto-close {symbol}: {res.get('msg') if res else 'Unknown error'}")
 
                 # --- Position Entry Logic ---
                 else:
-                    if abs(price_change_pct) > 1.5: # Entry condition
+                    if time.time() - last_close_time < TRADE_COOLDOWN_SECONDS:
+                        # This log can be noisy, so it's commented out. Uncomment for debugging.
+                        # app.logger.info(f"{symbol} is in cool-down period, skipping new entry check.")
+                        continue
+                    
+                    if abs(price_change_pct) > 1.5:
                         direction = "long" if price_change_pct > 0 else "short"
                         tp_price = current_price * (1 + (price_change_pct * 0.8 / 100))
                         sl_price = current_price * (1 - (price_change_pct * 0.4 / 100)) if direction == "long" else current_price * (1 + (abs(price_change_pct) * 0.4 / 100))
@@ -360,39 +281,33 @@ def trade_bot_worker():
             except Exception as e:
                 app.logger.error(f"Error in trade_bot_worker for item {item}: {e}", exc_info=True)
 
-
 def pnl_updater_worker():
     app.logger.info("PnL updater thread started.")
     while True:
-        time.sleep(1) # Loop every second
+        time.sleep(1)
         try:
             with positions_lock:
                 if not ACTIVE_POSITIONS: continue
                 active_positions_copy = dict(ACTIVE_POSITIONS)
                 symbols_to_fetch = list(set(pos['symbol'] for pos in active_positions_copy.values()))
             if not symbols_to_fetch: continue
-
             ticker_prices = get_bybit_ticker_data(symbols_to_fetch)
             if not ticker_prices: continue
             with settings_lock: leverage = SETTINGS.get('leverage', 10)
-
             for item_id, position in active_positions_copy.items():
                 symbol = position['symbol']
                 if symbol in ticker_prices:
-                    current_price = ticker_prices[symbol]
-                    entry_price = position['entry_price']; quantity = position['quantity']; direction = position['direction']
+                    current_price = ticker_prices[symbol]; entry_price = position['entry_price']; quantity = position['quantity']; direction = position['direction']
                     pnl = (current_price - entry_price) * quantity if direction == 'long' else (entry_price - current_price) * quantity
                     initial_margin = (entry_price * quantity) / leverage
                     pnl_pct = (pnl / initial_margin) * 100 if initial_margin > 0 else 0
                     with status_lock:
                         BOT_STATUS[item_id] = { "message": f"In {direction.upper()}", "color": "#28a745" if pnl >= 0 else "#dc3545", "pnl": pnl, "pnl_pct": pnl_pct }
-        except Exception as e:
-            app.logger.error(f"Error in PnL updater worker: {e}", exc_info=False)
-
+        except Exception as e: app.logger.error(f"Error in PnL updater worker: {e}", exc_info=False)
 
 # --- Backtesting Engine (Unchanged) ---
 def run_backtest_simulation(symbol, interval, start_ts, end_ts):
-    # ... This logic remains unchanged ...
+    # This logic remains unchanged
     all_candles_raw, current_start_ts = [], start_ts
     while current_start_ts <= end_ts:
         chunk = get_bybit_data(symbol, interval, start_ts=current_start_ts);
@@ -447,8 +362,7 @@ def api_candles():
     try:
         raw_candles = get_bybit_data(symbol, interval)[-500:]
         historical = [{"t": int(c[0]), "o": float(c[1]), "h": float(c[2]), "l": float(c[3]), "c": float(c[4])} for c in raw_candles]
-        predicted = predict_next_candles(raw_candles, num_predictions)
-        return jsonify({"candles": historical, "predicted": predicted})
+        predicted = predict_next_candles(raw_candles); return jsonify({"candles": historical, "predicted": predicted})
     except Exception as e: return jsonify({"error": str(e)}), 500
 @app.route('/api/settings', methods=['GET', 'POST'])
 def handle_settings():
@@ -469,9 +383,8 @@ def add_to_trade_list():
     return jsonify({"status": "success"})
 @app.route('/api/trade_list/remove', methods=['POST'])
 def remove_from_trade_list():
-    item_id = request.json.get('id')
-    with trade_list_lock:
-        global TRADE_LIST; TRADE_LIST = [i for i in TRADE_LIST if i['id'] != item_id]; save_to_json(TRADELIST_FILE, TRADE_LIST)
+    item_id = request.json.get('id');
+    with trade_list_lock: global TRADE_LIST; TRADE_LIST = [i for i in TRADE_LIST if i['id'] != item_id]; save_to_json(TRADELIST_FILE, TRADE_LIST)
     with status_lock:
         if item_id in BOT_STATUS: del BOT_STATUS[item_id]
     with positions_lock:
@@ -489,12 +402,12 @@ def manual_trade():
         app.logger.info(f"[MANUAL] Placing {side} order for {symbol}. Qty: {quantity:.4f}")
         res = client.place_order(symbol, order_side, position_side, quantity, lev)
         if res and res.get('code') == 0:
-            with positions_lock: ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'quantity': quantity, 'direction': side, 'entry_price': current_price}
+            with positions_lock, status_lock:
+                ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'quantity': quantity, 'direction': side, 'entry_price': current_price}
+                BOT_STATUS.pop(item_id, None)
             return jsonify({"message": f"Manual {side} order placed for {symbol}."})
         return jsonify({"error": f"Failed: {res.get('msg') if res else 'Unknown error'}"}), 400
     except Exception as e: app.logger.error(f"Manual trade error: {e}", exc_info=True); return jsonify({"error": str(e)}), 500
-
-# --- CORRECTED Manual Close Route ---
 @app.route('/api/manual_close', methods=['POST'])
 def manual_close():
     try:
@@ -503,23 +416,16 @@ def manual_close():
             if item_id not in ACTIVE_POSITIONS: return jsonify({"message": "No active position found by the bot to close."}), 404
             pos = ACTIVE_POSITIONS[item_id]
         with settings_lock: client = BingXClient(SETTINGS['bingx_api_key'], SETTINGS['bingx_secret_key'], SETTINGS['mode'] == 'demo'); lev = SETTINGS['leverage']
-        
-        # *** THE FIX IS HERE ***
-        # To close a position, the `positionSide` must match the original position's side.
-        position_side = pos['direction'].upper() # Correctly sets to LONG or SHORT
-        order_side = "SELL" if pos['direction'] == 'long' else "BUY" # The action is opposite
-        
+        position_side = pos['direction'].upper(); order_side = "SELL" if pos['direction'] == 'long' else "BUY"
         app.logger.info(f"[MANUAL-CLOSE] Closing {pos['direction']} for {symbol}. Qty: {pos['quantity']:.4f}")
         res = client.place_order(symbol, order_side, position_side, pos['quantity'], lev)
-        
         if res and res.get('code') == 0:
             with positions_lock, status_lock:
                 if item_id in ACTIVE_POSITIONS: del ACTIVE_POSITIONS[item_id]
-                if item_id in BOT_STATUS: BOT_STATUS[item_id] = {"message": "Waiting...", "color": "#fff", "pnl":0, "pnl_pct":0}
+                BOT_STATUS[item_id] = {"message": "Waiting...", "color": "#fff", "last_close_time": time.time()}
             return jsonify({"message": f"Close order for {symbol} placed."})
         return jsonify({"error": f"Failed to close: {res.get('msg') if res else 'Unknown error'}"}), 400
     except Exception as e: app.logger.error(f"Manual close error: {e}", exc_info=True); return jsonify({"error": str(e)}), 500
-
 @app.route('/api/backtest', methods=['POST'])
 def handle_backtest():
     data = request.json
@@ -531,7 +437,6 @@ def handle_backtest():
 # --- Main Execution ---
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    # Make sure to uncomment these lines to run the live/demo trading bot
     threading.Thread(target=trade_bot_worker, daemon=True).start()
     threading.Thread(target=pnl_updater_worker, daemon=True).start()
     app.run(host='0.0.0.0', port=5000, debug=False)
