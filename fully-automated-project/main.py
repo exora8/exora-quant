@@ -211,8 +211,8 @@ class BingXClient:
 # --- MODIFIED trade_bot_worker WITH BOT-SIDE TP/SL LOGIC ---
 def trade_bot_worker():
     app.logger.info("Trading bot worker thread started.")
-    ticker_check_interval = 1  # Seconds to wait before checking prices for TP/SL
-    analysis_interval = 30     # Seconds to wait for a full new candle analysis
+    ticker_check_interval = 5  # Seconds to wait before checking prices for TP/SL
+    analysis_interval = 60     # Seconds to wait for a full new candle analysis
     last_analysis_time = 0
 
     while True:
