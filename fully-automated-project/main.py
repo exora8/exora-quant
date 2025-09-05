@@ -362,7 +362,7 @@ def trade_bot_worker():
                     final_predicted_price = predicted_candles[-1]['c']
                     price_change_pct = ((final_predicted_price - current_price) / current_price) * 100
 
-                    if abs(price_change_pct) > 1.5:
+                    if abs(price_change_pct) > 4.0:
                         direction = "long" if price_change_pct > 0 else "short"
                         tp_price = current_price * (1 + (price_change_pct * 0.8 / 100))
                         sl_price = current_price * (1 - (price_change_pct * 0.4 / 100)) if direction == "long" else current_price * (1 + (abs(price_change_pct) * 0.4 / 100))
