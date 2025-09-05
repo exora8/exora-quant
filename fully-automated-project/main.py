@@ -5,6 +5,7 @@
 # Bybit PERPETUAL (linear) market instead of the SPOT market. This aligns
 # the data source with the bot's purpose of trading perpetual contracts,
 # increasing stability and accuracy.
+# THIS VERSION adds a configurable "Trigger Percentage" to the web UI.
 # ==============================================================================
 
 import time
@@ -63,7 +64,8 @@ SETTINGS = load_from_json(SETTINGS_FILE, {
     "bingx_secret_key": "YOUR_BINGX_SECRET_KEY",
     "mode": "demo",
     "risk_usdt": 10,
-    "leverage": 10
+    "leverage": 10,
+    "trigger_percentage": 4.0  # NEW: Configurable trade entry threshold
 })
 TRADE_LIST = load_from_json(TRADELIST_FILE, [])
 BOT_STATUS = {}
@@ -80,7 +82,7 @@ app = Flask(__name__)
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-# --- HTML & JavaScript Template (Unchanged) ---
+# --- HTML & JavaScript Template (MODIFIED) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -121,7 +123,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div id="chartdiv"></div><div class="controls-wrapper"><button id="toggle-controls-btn" title="Toggle Controls">☰</button><div class="controls-overlay"><label for="symbol">Symbol:</label><input type="text" id="symbol" value="BTCUSDT"><label for="interval">Timeframe:</label><select id="interval"><option value="60">1 hour</option><option value="240">4 hours</option><option value="D">Daily</option></select><label for="num_predictions">Predictions:</label><input type="number" id="num_predictions" value="20" min="1" max="50"><button id="fetchButton">Fetch</button><button id="add-to-list-btn" class="add-btn">Add to Trade List</button><div id="status"></div></div></div>
-    <div class="panels-container"><div id="settings-panel" class="panel"><h3>Settings</h3><div class="setting-item"><label for="api-key">API Key:</label><input type="text" id="api-key"></div><div class="setting-item"><label for="secret-key">Secret Key:</label><input type="password" id="secret-key"></div><div class="setting-item"><label for="mode">Mode:</label><select id="mode"><option value="demo">Demo</option><option value="live">Live</option></select></div><div class="setting-item"><label for="risk-usdt">Risk (USDT):</label><input type="number" id="risk-usdt" value="10"></div><div class="setting-item"><label for="leverage">Leverage:</label><input type="number" id="leverage" value="10"></div><button id="save-settings-btn">Save Settings</button></div><div id="tradelist-panel" class="panel"><h3>Live Trade List</h3><table id="trade-list-table"><thead><tr><th>Symbol</th><th>Timeframe</th><th>Status</th><th>PnL</th><th>Manual Control</th></tr></thead><tbody></tbody></table></div><div id="backtest-panel" class="panel"><h3>Backtest <button id="toggle-backtest-size-btn" title="Maximize">□</button></h3><div id="backtest-controls"><input type="text" id="backtest-symbol" value="BTCUSDT"><select id="backtest-interval"><option value="60">1 hour</option><option value="240">4 hours</option><option value="D">Daily</option></select><input type="date" id="backtest-start"><input type="date" id="backtest-end"><button id="run-backtest-btn">Run</button><div id="backtest-status" style="color: #ffc107;"></div></div><div id="backtest-results"><div id="equitychartdiv"></div><div id="backtest-stats"></div><div id="backtest-trades-table-container" style="height: 80px; overflow-y: auto;"><table id="backtest-trades-table" class="trade-list-table"><thead><tr><th>Exit Time</th><th>Side</th><th>PnL</th><th>Return %</th><th>Reason</th></tr></thead><tbody></tbody></table></div></div></div></div>
+    <div class="panels-container"><div id="settings-panel" class="panel"><h3>Settings</h3><div class="setting-item"><label for="api-key">API Key:</label><input type="text" id="api-key"></div><div class="setting-item"><label for="secret-key">Secret Key:</label><input type="password" id="secret-key"></div><div class="setting-item"><label for="mode">Mode:</label><select id="mode"><option value="demo">Demo</option><option value="live">Live</option></select></div><div class="setting-item"><label for="risk-usdt">Risk (USDT):</label><input type="number" id="risk-usdt" value="10"></div><div class="setting-item"><label for="leverage">Leverage:</label><input type="number" id="leverage" value="10"></div><div class="setting-item"><label for="trigger-percentage">Trigger %:</label><input type="number" id="trigger-percentage" value="4.0" step="0.1" min="0"></div><button id="save-settings-btn">Save Settings</button></div><div id="tradelist-panel" class="panel"><h3>Live Trade List</h3><table id="trade-list-table"><thead><tr><th>Symbol</th><th>Timeframe</th><th>Status</th><th>PnL</th><th>Manual Control</th></tr></thead><tbody></tbody></table></div><div id="backtest-panel" class="panel"><h3>Backtest <button id="toggle-backtest-size-btn" title="Maximize">□</button></h3><div id="backtest-controls"><input type="text" id="backtest-symbol" value="BTCUSDT"><select id="backtest-interval"><option value="60">1 hour</option><option value="240">4 hours</option><option value="D">Daily</option></select><input type="date" id="backtest-start"><input type="date" id="backtest-end"><button id="run-backtest-btn">Run</button><div id="backtest-status" style="color: #ffc107;"></div></div><div id="backtest-results"><div id="equitychartdiv"></div><div id="backtest-stats"></div><div id="backtest-trades-table-container" style="height: 80px; overflow-y: auto;"><table id="backtest-trades-table" class="trade-list-table"><thead><tr><th>Exit Time</th><th>Side</th><th>PnL</th><th>Return %</th><th>Reason</th></tr></thead><tbody></tbody></table></div></div></div></div>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     let root, chart, equityRoot;
@@ -130,8 +132,8 @@ document.addEventListener('DOMContentLoaded', function () {
     async function refreshTradeList() { const response = await fetch('/api/trade_list'); const { trade_list, bot_status } = await response.json(); const tableBody = document.querySelector('#trade-list-table tbody'); tableBody.innerHTML = ''; trade_list.forEach(item => { const status = bot_status[item.id] || { message: "Initializing...", color: "#fff" }; let pnlCell = '<td>-</td>'; if (status.pnl !== undefined) { const pnl = status.pnl; const pnl_pct = status.pnl_pct; const pnlColor = pnl > 0 ? '#28a745' : (pnl < 0 ? '#dc3545' : '#fff'); pnlCell = `<td style="color: ${pnlColor}; font-weight: bold;">${pnl.toFixed(2)} <span style="font-size:0.8em; opacity: 0.8;">(${pnl_pct.toFixed(2)}%)</span></td>`; } const row = `<tr><td>${item.symbol}</td><td>${item.interval_text}</td><td style="color:${status.color}">${status.message}</td>${pnlCell}<td><button class="manual-trade-btn long-btn" data-id="${item.id}" data-symbol="${item.symbol}">Long</button><button class="manual-trade-btn short-btn" data-id="${item.id}" data-symbol="${item.symbol}">Short</button><button class="manual-trade-btn close-btn" data-id="${item.id}" data-symbol="${item.symbol}">Close</button><button class="remove-btn" data-id="${item.id}">X</button></td></tr>`; tableBody.insertAdjacentHTML('beforeend', row); }); document.querySelectorAll('.remove-btn').forEach(btn => { btn.addEventListener('click', () => removeTradeItem(btn.dataset.id)); }); document.querySelectorAll('.long-btn').forEach(btn => { btn.addEventListener('click', () => manualTrade('long', btn.dataset.symbol, btn.dataset.id)); }); document.querySelectorAll('.short-btn').forEach(btn => { btn.addEventListener('click', () => manualTrade('short', btn.dataset.symbol, btn.dataset.id)); }); document.querySelectorAll('.close-btn').forEach(btn => { btn.addEventListener('click', () => manualClose(btn.dataset.symbol, btn.dataset.id)); }); };
     let xAxis, yAxis; function createMainChart() { if (root) root.dispose(); root = am5.Root.new("chartdiv"); root.setThemes([am5themes_Animated.new(root), am5themes_Dark.new(root)]); chart = root.container.children.push(am5xy.XYChart.new(root, { panX: true, wheelX: "panX", pinchZoomX: true })); chart.set("cursor", am5xy.XYCursor.new(root, { behavior: "panX" })).lineY.set("visible", false); xAxis = chart.xAxes.push(am5xy.DateAxis.new(root, { baseInterval: { timeUnit: "minute", count: 60 }, renderer: am5xy.AxisRendererX.new(root, { minGridDistance: 70 }) })); yAxis = chart.yAxes.push(am5xy.ValueAxis.new(root, { renderer: am5xy.AxisRendererY.new(root, {}) })); let series = chart.series.push(am5xy.CandlestickSeries.new(root, { name: "Historical", xAxis: xAxis, yAxis: yAxis, valueXField: "t", openValueYField: "o", highValueYField: "h", lowValueYField: "l", valueYField: "c" })); let predictedSeries = chart.series.push(am5xy.CandlestickSeries.new(root, { name: "Predicted", xAxis: xAxis, yAxis: yAxis, valueXField: "t", openValueYField: "o", highValueYField: "h", lowValueYField: "l", valueYField: "c" })); predictedSeries.columns.template.setAll({ fill: am5.color(0xaaaaaa), stroke: am5.color(0xaaaaaa) }); chart.set("scrollbarX", am5.Scrollbar.new(root, { orientation: "horizontal" })); };
     async function fetchChartData() { createMainChart(); const symbol = document.getElementById('symbol').value.toUpperCase().trim(); const interval = document.getElementById('interval').value; const numPredictions = document.getElementById('num_predictions').value; if (!symbol) { document.getElementById('status').innerText = 'Error: Symbol cannot be empty.'; return; } document.getElementById('status').innerText = 'Fetching chart data...'; try { const response = await fetch(`/api/candles?symbol=${symbol}&interval=${interval}&predictions=${numPredictions}`); if (!response.ok) throw new Error((await response.json()).error); const data = await response.json(); const intervalConfig = !isNaN(interval) ? { timeUnit: "minute", count: parseInt(interval) } : { timeUnit: { 'D': 'day', 'W': 'week', 'M': 'month' }[interval] || 'day', count: 1 }; xAxis.set("baseInterval", intervalConfig); chart.series.getIndex(0).data.setAll(data.candles); chart.series.getIndex(1).data.setAll(data.predicted); document.getElementById('status').innerText = 'Chart updated.'; } catch (error) { document.getElementById('status').innerText = `Error: ${error.message}`; } finally { setTimeout(() => { document.getElementById('status').innerText = ''; }, 3000); }};
-    async function saveSettings() { const settings = { bingx_api_key: document.getElementById('api-key').value, bingx_secret_key: document.getElementById('secret-key').value, mode: document.getElementById('mode').value, risk_usdt: parseFloat(document.getElementById('risk-usdt').value), leverage: parseInt(document.getElementById('leverage').value) }; await fetch('/api/settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(settings) }); alert('Settings saved!'); };
-    async function loadSettings() { const response = await fetch('/api/settings'); const settings = await response.json(); document.getElementById('api-key').value = settings.bingx_api_key; document.getElementById('secret-key').value = settings.bingx_secret_key; document.getElementById('mode').value = settings.mode; document.getElementById('risk-usdt').value = settings.risk_usdt; document.getElementById('leverage').value = settings.leverage; };
+    async function saveSettings() { const settings = { bingx_api_key: document.getElementById('api-key').value, bingx_secret_key: document.getElementById('secret-key').value, mode: document.getElementById('mode').value, risk_usdt: parseFloat(document.getElementById('risk-usdt').value), leverage: parseInt(document.getElementById('leverage').value), trigger_percentage: parseFloat(document.getElementById('trigger-percentage').value) }; await fetch('/api/settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(settings) }); alert('Settings saved!'); };
+    async function loadSettings() { const response = await fetch('/api/settings'); const settings = await response.json(); document.getElementById('api-key').value = settings.bingx_api_key; document.getElementById('secret-key').value = settings.bingx_secret_key; document.getElementById('mode').value = settings.mode; document.getElementById('risk-usdt').value = settings.risk_usdt; document.getElementById('leverage').value = settings.leverage; document.getElementById('trigger-percentage').value = settings.trigger_percentage; };
     async function addTradeItem() { const item = { symbol: document.getElementById('symbol').value.toUpperCase().trim(), interval: document.getElementById('interval').value, interval_text: document.getElementById('interval').options[document.getElementById('interval').selectedIndex].text, predictions: parseInt(document.getElementById('num_predictions').value) }; await fetch('/api/trade_list/add', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(item) }); refreshTradeList(); };
     async function removeTradeItem(id) { await fetch('/api/trade_list/remove', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ id: id }) }); refreshTradeList(); };
     let backtestRunning = false;
@@ -255,7 +257,9 @@ def trade_bot_worker():
         with trade_list_lock: trade_list_copy = list(TRADE_LIST)
         with settings_lock:
             client = BingXClient(SETTINGS['bingx_api_key'], SETTINGS['bingx_secret_key'], SETTINGS['mode'] == 'demo')
-            risk, leverage = SETTINGS['risk_usdt'], SETTINGS['leverage']
+            risk = SETTINGS['risk_usdt']
+            leverage = SETTINGS['leverage']
+            trigger_percentage = SETTINGS.get('trigger_percentage', 4.0)
 
         # --- High-frequency TP/SL and PnL monitoring ---
         try:
@@ -362,7 +366,7 @@ def trade_bot_worker():
                     final_predicted_price = predicted_candles[-1]['c']
                     price_change_pct = ((final_predicted_price - current_price) / current_price) * 100
 
-                    if abs(price_change_pct) > 4.0:
+                    if abs(price_change_pct) > trigger_percentage:
                         direction = "long" if price_change_pct > 0 else "short"
                         tp_price = current_price * (1 + (price_change_pct * 0.8 / 100))
                         sl_price = current_price * (1 - (price_change_pct * 0.4 / 100)) if direction == "long" else current_price * (1 + (abs(price_change_pct) * 0.4 / 100))
@@ -419,7 +423,7 @@ def pnl_updater_worker():
                         BOT_STATUS[item_id] = { "message": f"In {direction.upper()}", "color": "#28a745" if pnl >= 0 else "#dc3545", "pnl": pnl, "pnl_pct": pnl_pct }
         except Exception as e: app.logger.error(f"Error in PnL updater worker: {e}", exc_info=False)
 
-# --- Backtesting Engine (Unchanged) ---
+# --- Backtesting Engine (MODIFIED) ---
 def run_backtest_simulation(symbol, interval, start_ts, end_ts):
     all_candles_raw, current_start_ts = [], start_ts
     while current_start_ts <= end_ts:
@@ -429,7 +433,11 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts):
         if len(chunk) < 1000 or last_ts >= end_ts: break
         current_start_ts = last_ts + 1
     if len(all_candles_raw) < 50: raise ValueError("Not enough historical data.")
-    with settings_lock: risk_usdt, leverage = SETTINGS['risk_usdt'], SETTINGS['leverage']
+    with settings_lock:
+        risk_usdt = SETTINGS['risk_usdt']
+        leverage = SETTINGS['leverage']
+        trigger_percentage = SETTINGS.get('trigger_percentage', 4.0)
+
     equity, equity_curve, trades, open_position = 10000.0, [{'time': start_ts, 'equity': 10000.0}], [], None
     for i in range(50, len(all_candles_raw)):
         candle = {'t': int(all_candles_raw[i][0]), 'c': float(all_candles_raw[i][4]), 'h': float(all_candles_raw[i][2]), 'l': float(all_candles_raw[i][3])}
@@ -453,7 +461,7 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts):
             predicted = predict_next_candles(all_candles_raw[i-50:i], 20)
             if predicted:
                 price = float(all_candles_raw[i-1][4]); change = ((predicted[-1]['c'] - price) / price) * 100
-                if abs(change) > 1.5:
+                if abs(change) > trigger_percentage:
                     direction = "long" if change > 0 else "short"
                     tp = price * (1 + (change*0.8/100)); sl = price * (1-(change*0.4/100)) if direction == "long" else price * (1+(abs(change)*0.4/100))
                     if not (any(p['l'] < sl for p in predicted) if direction == "long" else any(p['h'] > sl for p in predicted)) and abs(price-sl)>0:
