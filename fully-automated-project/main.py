@@ -1,5 +1,5 @@
 # ==============================================================================
-# Exora Quant AI - v3.8 with Bot-Side TP/SL Management
+# Exora Quant AI - v3.8 with Bot-Side TP/SL Management & Liquidation Guard
 # ==============================================================================
 # This version is MODIFIED to fetch all price and candle data from the
 # Bybit PERPETUAL (linear) market instead of the SPOT market. This aligns
@@ -7,6 +7,7 @@
 # increasing stability and accuracy.
 # THIS VERSION adds a configurable "Trigger Percentage" to the web UI.
 # THIS VERSION IS MODIFIED to use percentage-based risk and display total balance.
+# THIS VERSION ADDS a liquidation detection feature to adjust SL and prevent liquidation.
 # ==============================================================================
 
 import time
@@ -34,6 +35,7 @@ BINGX_API_URL = "https://open-api.bingx.com"
 SETTINGS_FILE = "settings.json"
 TRADELIST_FILE = "tradelist.json"
 TRADE_COOLDOWN_SECONDS = 300 # 5 minutes
+MAINTENANCE_MARGIN_RATE = 0.005 # Standard rate for major pairs like BTC/ETH
 
 # --- FIX: Create a robust requests session with retries ---
 session = requests.Session()
@@ -150,6 +152,23 @@ document.addEventListener('DOMContentLoaded', function () {
 </html>
 """
 
+# --- NEW: Liquidation Calculation Helper ---
+def calculate_liquidation_price(entry_price, leverage, direction, maintenance_margin_rate=MAINTENANCE_MARGIN_RATE):
+    """Calculates the approximate liquidation price for a given entry."""
+    if leverage <= 0: return None
+    
+    initial_margin_rate = 1 / leverage
+    
+    if direction == 'long':
+        # Formula for isolated margin: Liq. Price = Entry * (1 - Initial Margin % + Maintenance Margin %)
+        price_change_percentage = initial_margin_rate - maintenance_margin_rate
+        return entry_price * (1 - price_change_percentage)
+    elif direction == 'short':
+        # Formula for isolated margin: Liq. Price = Entry * (1 + Initial Margin % - Maintenance Margin %)
+        price_change_percentage = initial_margin_rate - maintenance_margin_rate
+        return entry_price * (1 + price_change_percentage)
+    return None
+
 # --- Data Fetching & Prediction (FIXED) ---
 def get_bybit_data(symbol, interval, start_ts=None, end_ts=None, limit=1000):
     params = {"category": "linear", "symbol": symbol, "interval": interval, "limit": limit}
@@ -249,7 +268,7 @@ class BingXClient:
     
     def set_leverage(self, symbol, side, leverage): return self._request('POST', "/openApi/swap/v2/trade/leverage", {"symbol": symbol, "side": side, "leverage": leverage})
 
-# --- MODIFIED trade_bot_worker WITH BOT-SIDE TP/SL & PERCENTAGE RISK LOGIC ---
+# --- MODIFIED trade_bot_worker WITH LIQUIDATION GUARD ---
 def trade_bot_worker():
     app.logger.info("Trading bot worker thread started.")
     ticker_check_interval = 5
@@ -312,7 +331,6 @@ def trade_bot_worker():
             app.logger.info("Starting new signal analysis cycle...")
             last_analysis_time = time.time()
             
-            # --- Fetch balance ONCE per analysis cycle ---
             balance_response = client.get_balance()
             total_balance = 0
             if balance_response and balance_response.get('code') == 0:
@@ -340,7 +358,7 @@ def trade_bot_worker():
                     final_predicted_price = predicted_candles[-1]['c']
                     price_change_pct = ((final_predicted_price - current_price) / current_price) * 100
 
-                    if position_data: # Position Management (Reversal Signal)
+                    if position_data:
                         direction = position_data['direction']
                         is_long = direction == 'long'
                         signal_reversed = (is_long and price_change_pct < -0.5) or (not is_long and price_change_pct > 0.5)
@@ -356,17 +374,30 @@ def trade_bot_worker():
                                     BOT_STATUS[item_id] = {"message": "Waiting...", "color": "#fff", "last_close_time": time.time()}
                             else: app.logger.error(f"Failed to auto-close {symbol}: {res.get('msg') if res else 'Unknown error'}")
 
-                    elif time.time() - last_close_time > TRADE_COOLDOWN_SECONDS: # Position Entry Logic
+                    elif time.time() - last_close_time > TRADE_COOLDOWN_SECONDS:
                         if abs(price_change_pct) > trigger_percentage:
                             direction = "long" if price_change_pct > 0 else "short"
                             tp_price = current_price * (1 + (price_change_pct * 0.8 / 100))
                             sl_price = current_price * (1 - (price_change_pct * 0.4 / 100)) if direction == "long" else current_price * (1 + (abs(price_change_pct) * 0.4 / 100))
                             
+                            # --- LIQUIDATION GUARD ---
+                            liquidation_price = calculate_liquidation_price(current_price, leverage, direction)
+                            if liquidation_price is not None:
+                                if direction == "long" and sl_price <= liquidation_price:
+                                    adjusted_sl = liquidation_price * 1.001
+                                    app.logger.warning(f"[{symbol}] Original SL ({sl_price:.4f}) breached liquidation price ({liquidation_price:.4f}). Adjusting SL to {adjusted_sl:.4f}.")
+                                    sl_price = adjusted_sl
+                                elif direction == "short" and sl_price >= liquidation_price:
+                                    adjusted_sl = liquidation_price * 0.999
+                                    app.logger.warning(f"[{symbol}] Original SL ({sl_price:.4f}) breached liquidation price ({liquidation_price:.4f}). Adjusting SL to {adjusted_sl:.4f}.")
+                                    sl_price = adjusted_sl
+
                             if abs(current_price - sl_price) > 0:
+                                # Quantity is calculated based on the final, potentially adjusted SL
                                 quantity = risk_usdt / abs(current_price - sl_price)
                                 position_side, order_side = direction.upper(), "BUY" if direction == 'long' else "SELL"
                                 
-                                app.logger.info(f"[AUTO-TRADE] Entry signal for {symbol}. Placing {direction} order.")
+                                app.logger.info(f"[AUTO-TRADE] Entry signal for {symbol}. Placing {direction} order with SL at {sl_price:.4f}.")
                                 res = client.place_order(symbol, order_side, position_side, quantity, leverage)
                                 
                                 if res and res.get('code') == 0:
@@ -377,7 +408,7 @@ def trade_bot_worker():
                                     app.logger.error(f"Failed to open position for {symbol}: {res.get('msg') if res else 'Unknown error'}")
                 except Exception as e:
                     app.logger.error(f"Error in analysis for {item.get('symbol', 'N/A')}: {e}", exc_info=False)
-                time.sleep(1) # Delay between analyzing each coin
+                time.sleep(1)
 
         except Exception as e:
             app.logger.error(f"FATAL ERROR in main trade_bot_worker loop: {e}", exc_info=True)
@@ -413,7 +444,7 @@ def pnl_updater_worker():
             app.logger.error(f"Error in PnL updater worker: {e}", exc_info=False)
 
 
-# --- Backtesting Engine (MODIFIED) ---
+# --- Backtesting Engine (MODIFIED with LIQUIDATION GUARD) ---
 def run_backtest_simulation(symbol, interval, start_ts, end_ts):
     all_candles_raw, current_start_ts = [], start_ts
     while current_start_ts <= end_ts:
@@ -455,9 +486,19 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts):
                 if abs(change) > trigger_percentage:
                     direction = "long" if change > 0 else "short"
                     tp = price * (1 + (change*0.8/100)); sl = price * (1-(change*0.4/100)) if direction == "long" else price * (1+(abs(change)*0.4/100))
+                    
+                    # --- LIQUIDATION GUARD FOR BACKTEST ---
+                    liquidation_price = calculate_liquidation_price(price, leverage, direction)
+                    if liquidation_price is not None:
+                        if direction == "long" and sl <= liquidation_price:
+                            sl = liquidation_price * 1.001
+                        elif direction == "short" and sl >= liquidation_price:
+                            sl = liquidation_price * 0.999
+
                     if not (any(p['l'] < sl for p in predicted) if direction == "long" else any(p['h'] > sl for p in predicted)) and abs(price-sl)>0:
                         risk_amount = equity * (risk_percentage / 100)
-                        open_position = {'entry_price': price, 'quantity': risk_amount / abs(price - sl), 'direction': direction, 'tp': tp, 'sl': sl}
+                        quantity = risk_amount / abs(price - sl)
+                        open_position = {'entry_price': price, 'quantity': quantity, 'direction': direction, 'tp': tp, 'sl': sl}
         equity_curve.append({'time': candle['t'], 'equity': equity})
     net_profit = equity - 10000; total_trades = len(trades); win_rate = (len([t for t in trades if t['pnl'] > 0]) / total_trades * 100) if total_trades > 0 else 0; total_profit = sum(t['pnl'] for t in trades if t['pnl']>0); total_loss = abs(sum(t['pnl'] for t in trades if t['pnl']<=0)); profit_factor = total_profit / total_loss if total_loss > 0 else float('inf'); max_dd, peak = 0, -1
     for item in equity_curve:
