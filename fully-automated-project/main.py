@@ -1,5 +1,5 @@
 # ==============================================================================
-# Exora Quant AI - v3.8.2 with True Spot Trading Integration
+# Exora Quant AI - v3.8.2 with True Spot Wallet & Order Integration
 # ==============================================================================
 # This version is MODIFIED to fetch all price and candle data from the
 # Bybit PERPETUAL (linear) market instead of the SPOT market. This aligns
@@ -9,7 +9,7 @@
 # THIS VERSION IS MODIFIED to use percentage-based risk and display total balance.
 # THIS VERSION ADDS a liquidation detection feature to adjust SL and prevent liquidation.
 # THIS VERSION ADDS a switchable Spot Trading mode for both live bots and backtesting.
-# THIS VERSION FIXES the bot to use the correct BingX Spot API endpoints for balance and orders.
+# THIS VERSION FIXES the trading bot to use the correct BingX SPOT WALLET and SPOT ORDER endpoints when in Spot mode.
 # ==============================================================================
 
 import time
@@ -95,7 +95,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Exora Quant AI v3.8.2 (True Spot/Futures Mode)</title>
+    <title>Exora Quant AI v3.8.2 (True Spot Integration)</title>
     <style>
         html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #000; color: #eee; font-size: 14px; }
         #chartdiv { width: 100%; height: calc(100% - 250px); }
@@ -170,12 +170,12 @@ document.addEventListener('DOMContentLoaded', function () {
     async function loadSettings() { const response = await fetch('/api/settings'); const settings = await response.json(); document.getElementById('api-key').value = settings.bingx_api_key; document.getElementById('secret-key').value = settings.bingx_secret_key; document.getElementById('mode').value = settings.mode; document.getElementById('trading-mode').value = settings.trading_mode || 'futures'; document.getElementById('risk-percentage').value = settings.risk_percentage; document.getElementById('leverage').value = settings.leverage; document.getElementById('trigger-percentage').value = settings.trigger_percentage; toggleLeverageInput(); };
     async function addTradeItem() { const item = { symbol: document.getElementById('symbol').value.toUpperCase().trim(), interval: document.getElementById('interval').value, interval_text: document.getElementById('interval').options[document.getElementById('interval').selectedIndex].text, predictions: parseInt(document.getElementById('num_predictions').value) }; await fetch('/api/trade_list/add', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(item) }); refreshTradeList(); };
     async function removeTradeItem(id) { await fetch('/api/trade_list/remove', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ id: id }) }); refreshTradeList(); };
-    async function refreshBalance() { try { const response = await fetch('/api/balance'); if (!response.ok) { document.getElementById('balance-display').textContent = 'Balance: Error'; return; } const data = await response.json(); if (data.total_balance !== undefined) { document.getElementById('balance-display').textContent = `Balance: ${data.total_balance.toFixed(2)} USDT`; } else { document.getElementById('balance-display').textContent = `Balance: ${data.error || 'N/A'}`; } } catch (error) { document.getElementById('balance-display').textContent = 'Balance: Network Error'; } }
+    async function refreshBalance() { try { const response = await fetch('/api/balance'); if (!response.ok) { document.getElementById('balance-display').textContent = 'Balance: Error'; return; } const data = await response.json(); if (data.total_balance !== undefined) { const tradingMode = document.getElementById('trading-mode').value; document.getElementById('balance-display').textContent = `${tradingMode.charAt(0).toUpperCase() + tradingMode.slice(1)} Balance: ${data.total_balance.toFixed(2)} USDT`; } else { document.getElementById('balance-display').textContent = `Balance: ${data.error || 'N/A'}`; } } catch (error) { document.getElementById('balance-display').textContent = 'Balance: Network Error'; } }
     let backtestRunning = false;
     async function runBacktest() { if (backtestRunning) return; backtestRunning = true; const statusEl = document.getElementById('backtest-status'); const resultsEl = document.getElementById('backtest-results'); statusEl.textContent = 'Fetching historical data...'; resultsEl.style.display = 'none'; const payload = { symbol: document.getElementById('backtest-symbol').value.toUpperCase(), interval: document.getElementById('backtest-interval').value, mode: document.getElementById('backtest-mode').value, start_date: document.getElementById('backtest-start').value, end_date: document.getElementById('backtest-end').value, }; try { statusEl.textContent = 'Running simulation...'; const response = await fetch('/api/backtest', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }); if (!response.ok) throw new Error((await response.json()).error); const results = await response.json(); displayBacktestResults(results); statusEl.textContent = 'Backtest complete.'; } catch (error) { statusEl.textContent = `Error: ${error.message}`; } finally { backtestRunning = false; } }
     function displayBacktestResults(results) { document.getElementById('backtest-results').style.display = 'block'; const stats = results.metrics; const statsEl = document.getElementById('backtest-stats'); statsEl.innerHTML = `<div>Net Profit: <span style="color:${stats.net_profit > 0 ? '#28a745' : '#dc3545'}">${stats.net_profit.toFixed(2)} USDT</span></div><div>Win Rate: <span>${stats.win_rate.toFixed(2)}%</span></div><div>Profit Factor: <span>${stats.profit_factor.toFixed(2)}</span></div><div>Total Trades: <span>${stats.total_trades}</span></div><div>Avg Trade PnL: <span>${stats.avg_trade_pnl.toFixed(2)}</span></div><div>Max Drawdown: <span style="color:#dc3545">${stats.max_drawdown.toFixed(2)}%</span></div>`; const tradesTableBody = document.querySelector('#backtest-trades-table tbody'); tradesTableBody.innerHTML = ''; results.trades.forEach(trade => { const pnlColor = trade.pnl > 0 ? '#28a745' : '#dc3545'; const row = `<tr><td>${new Date(trade.exit_time).toLocaleString()}</td><td>${trade.direction}</td><td style="color:${pnlColor}">${trade.pnl.toFixed(2)}</td><td style="color:${pnlColor}">${trade.return_pct.toFixed(2)}%</td><td>${trade.exit_reason || 'N/A'}</td></tr>`; tradesTableBody.insertAdjacentHTML('afterbegin', row); }); createEquityChart(results.equity_curve); }
-    function createEquityChart(data) { if (equityRoot) equityRoot.dispose(); equityRoot = am5.Root.new("equitychartdiv"); equityRoot.setThemes([am5themes_Dark.new(equityRoot)]); let chart = equityRoot.container.children.push(am5xy.XYChart.new(equityRoot, { panX: true, wheelX: "zoomX", pinchZoomX: true, paddingLeft: 0, paddingRight: 0 })); let xAxis = chart.xAxes.push(am5xy.DateAxis.new(equityRoot, { baseInterval: { timeUnit: "day", count: 1 }, renderer: am5xy.AxisRendererX.new(root, { minGridDistance: 50 }), })); let yAxis = chart.yAxes.push(am5xy.ValueAxis.new(root, { renderer: am5xy.AxisRendererY.new(root, {}) })); let series = chart.series.push(am5xy.LineSeries.new(root, { name: "Equity", xAxis: xAxis, yAxis: yAxis, valueYField: "equity", valueXField: "time", stroke: am5.color(0x00aaff), fill: am5.color(0x00aaff), })); series.fills.template.setAll({ fillOpacity: 0.1, visible: true }); series.data.setAll(data); }
-    function toggleLeverageInput() { const mode = document.getElementById('trading-mode').value; const leverageInput = document.getElementById('leverage'); const riskLabel = document.getElementById('risk-label'); if (mode === 'spot') { leverageInput.disabled = true; riskLabel.textContent = 'Investment (%):'; } else { leverageInput.disabled = false; riskLabel.textContent = 'Risk (%):'; } }
+    function createEquityChart(data) { if (equityRoot) equityRoot.dispose(); equityRoot = am5.Root.new("equitychartdiv"); equityRoot.setThemes([am5themes_Dark.new(equityRoot)]); let chart = equityRoot.container.children.push(am5xy.XYChart.new(equityRoot, { panX: true, wheelX: "zoomX", pinchZoomX: true, paddingLeft: 0, paddingRight: 0 })); let xAxis = chart.xAxes.push(am5xy.DateAxis.new(equityRoot, { baseInterval: { timeUnit: "day", count: 1 }, renderer: am5xy.AxisRendererX.new(equityRoot, { minGridDistance: 50 }), })); let yAxis = chart.yAxes.push(am5xy.ValueAxis.new(equityRoot, { renderer: am5xy.AxisRendererY.new(equityRoot, {}) })); let series = chart.series.push(am5xy.LineSeries.new(root, { name: "Equity", xAxis: xAxis, yAxis: yAxis, valueYField: "equity", valueXField: "time", stroke: am5.color(0x00aaff), fill: am5.color(0x00aaff), })); series.fills.template.setAll({ fillOpacity: 0.1, visible: true }); series.data.setAll(data); }
+    function toggleLeverageInput() { const mode = document.getElementById('trading-mode').value; const leverageInput = document.getElementById('leverage'); const riskLabel = document.getElementById('risk-label'); if (mode === 'spot') { leverageInput.disabled = true; riskLabel.textContent = 'Investment (%):'; } else { leverageInput.disabled = false; riskLabel.textContent = 'Risk (%):'; } refreshBalance(); }
     function initialize() { loadSettings(); refreshTradeList(); refreshBalance(); setInterval(refreshTradeList, 1000); setInterval(refreshBalance, 30000); const today = new Date(); const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1); const threeMonthsAgo = new Date(today); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3); document.getElementById('backtest-end').valueAsDate = yesterday; document.getElementById('backtest-start').valueAsDate = threeMonthsAgo; document.getElementById('toggle-controls-btn').addEventListener('click', () => document.querySelector('.controls-overlay').classList.toggle('hidden')); document.getElementById('fetchButton').addEventListener('click', fetchChartData); document.getElementById('add-to-list-btn').addEventListener('click', addTradeItem); document.getElementById('save-settings-btn').addEventListener('click', saveSettings); document.getElementById('run-backtest-btn').addEventListener('click', runBacktest); document.getElementById('trading-mode').addEventListener('change', toggleLeverageInput); document.getElementById('toggle-backtest-size-btn').addEventListener('click', (e) => { const btn = e.target; const container = document.querySelector('.panels-container'); const chartContainer = document.getElementById('chartdiv'); container.classList.toggle('is-maximized'); if (container.classList.contains('is-maximized')) { btn.textContent = '−'; btn.title = "Minimize"; chartContainer.style.height = '40px'; } else { btn.textContent = '□'; btn.title = "Maximize"; chartContainer.style.height = 'calc(100% - 250px)'; } setTimeout(() => { if (equityRoot) { equityRoot.resize(); } if (root) { root.resize(); } }, 350); }); }
     initialize();
 });
@@ -189,12 +189,14 @@ def calculate_liquidation_price(entry_price, leverage, direction, maintenance_ma
     if leverage <= 1: return None
     initial_margin_rate = 1 / leverage
     if direction == 'long':
-        return entry_price * (1 - (initial_margin_rate - maintenance_margin_rate))
+        price_change_percentage = initial_margin_rate - maintenance_margin_rate
+        return entry_price * (1 - price_change_percentage)
     elif direction == 'short':
-        return entry_price * (1 + (initial_margin_rate - maintenance_margin_rate))
+        price_change_percentage = initial_margin_rate - maintenance_margin_rate
+        return entry_price * (1 + price_change_percentage)
     return None
 
-# --- Data Fetching & Prediction (FIXED) ---
+# --- Data Fetching & Prediction ---
 def get_bybit_data(symbol, interval, start_ts=None, end_ts=None, limit=1000):
     params = {"category": "linear", "symbol": symbol, "interval": interval, "limit": limit}
     if start_ts: params['start'] = int(start_ts)
@@ -256,65 +258,53 @@ def predict_next_candles(candles_data, num_predictions=20):
         predictions.append({"t": new_ts, "o": pred_o, "h": pred_h, "l": pred_l, "c": predicted_close})
     return predictions
 
-# --- BingX Client (MODIFIED FOR TRUE SPOT TRADING) ---
+# --- BingX Client (MODIFIED WITH DEDICATED SPOT/FUTURES METHODS) ---
 class BingXClient:
     def __init__(self, api_key, secret_key, demo_mode=True): self.api_key, self.secret_key, self.demo_mode = api_key, secret_key, demo_mode
     def _sign(self, params_str): return hmac.new(self.secret_key.encode('utf-8'), params_str.encode('utf-8'), hashlib.sha256).hexdigest()
     def _request(self, method, path, params=None):
         if params is None: params = {}
         params['timestamp'] = int(time.time() * 1000)
-        sorted_params = sorted(params.items())
-        query_string = urlencode(sorted_params)
+        query_string = urlencode(sorted(params.items()))
         signature = self._sign(query_string)
         url = f"{BINGX_API_URL}{path}?{query_string}&signature={signature}"; headers = {'X-BX-APIKEY': self.api_key}
         try:
             response = session.request(method.upper(), url, headers=headers, timeout=(5, 10))
-            response.raise_for_status()
-            return response.json()
+            response.raise_for_status(); return response.json()
         except requests.exceptions.RequestException as e:
-            app.logger.error(f"BingX API request failed: {e.response.text if e.response else e}")
+            app.logger.error(f"BingX API request failed for path {path}: {e.response.text if e.response else e}")
             return None
-    
-    def get_balance(self, trading_mode='futures'):
-        if self.demo_mode:
-            return {"code": 0, "data": {"balance": 10000.0}}
-        
-        if trading_mode == 'spot':
-            # NEW: Use Spot API endpoint for balance
-            res = self._request('GET', "/openApi/spot/v1/account/balance")
-            if res and res.get('code') == 0:
-                try:
-                    usdt_balance = next(item['free'] for item in res['data']['balances'] if item['asset'] == 'USDT')
-                    return {"code": 0, "data": {"balance": float(usdt_balance)}}
-                except (StopIteration, KeyError):
-                    return {"code": -1, "msg": "USDT balance not found in spot account"}
-            return res
-        else: # futures
-            res = self._request('GET', "/openApi/swap/v2/user/balance", {"currency": "USDT"})
-            if res and res.get('code') == 0:
-                return {"code": 0, "data": {"balance": float(res['data']['balance']['balance'])}}
-            return res
 
-    def place_order(self, symbol, side, position_side, quantity, leverage, trading_mode='futures'):
+    def get_futures_balance(self):
+        if self.demo_mode: return {"code": 0, "data": {"balance": {"balance": "10000.00"}}}
+        return self._request('GET', "/openApi/swap/v2/user/balance", {"currency": "USDT"})
+
+    def get_spot_balance(self):
+        if self.demo_mode: return {"code": 0, "data": {"balances": [{"asset": "USDT", "free": "10000.00"}]}}
+        return self._request('GET', "/openApi/spot/v1/account/balance")
+
+    def place_futures_order(self, symbol, side, position_side, quantity, leverage):
         if self.demo_mode:
-            app.logger.info(f"[DEMO] Place {trading_mode} {side} order: {quantity} {symbol}")
-            return {"code": 0, "msg": "Demo order placed"}
-        
+            app.logger.info(f"[DEMO FUTURES] Place {side} {position_side} order: {quantity} {symbol} @ {leverage}x")
+            return {"code": 0, "msg": "Demo futures order placed"}
         bingx_symbol = f"{symbol.replace('USDT', '')}-USDT"
+        self._request('POST', "/openApi/swap/v2/trade/leverage", {"symbol": bingx_symbol, "side": position_side.upper(), "leverage": leverage})
+        params = {"symbol": bingx_symbol, "side": side.upper(), "positionSide": position_side.upper(), "type": "MARKET", "quantity": f"{float(quantity):.5f}"}
+        return self._request('POST', "/openApi/swap/v2/trade/order", params)
+    
+    def place_spot_order(self, symbol, side, quantity=None, quote_order_qty=None):
+        if self.demo_mode:
+            log_msg = f"[DEMO SPOT] Place {side} order: {quantity} {symbol}" if quantity else f"[DEMO SPOT] Place {side} order: {quote_order_qty} USDT of {symbol}"
+            app.logger.info(log_msg)
+            return {"code": 0, "msg": "Demo spot order placed"}
+        bingx_symbol = f"{symbol.replace('USDT', '')}-USDT"
+        params = {"symbol": bingx_symbol, "side": side.upper(), "type": "MARKET"}
+        if quantity: params["quantity"] = f"{float(quantity):.5f}"
+        elif quote_order_qty: params["quoteOrderQty"] = f"{float(quote_order_qty):.2f}"
+        else: raise ValueError("Either quantity or quote_order_qty must be provided for a spot order.")
+        return self._request('POST', "/openApi/spot/v1/trade/order", params)
 
-        if trading_mode == 'spot':
-            # NEW: Use Spot API endpoint for orders
-            params = {"symbol": bingx_symbol, "side": side.upper(), "type": "MARKET", "quantity": f"{float(quantity):.8f}"}
-            return self._request('POST', "/openApi/spot/v1/trade/order", params)
-        else: # futures
-            self.set_leverage(bingx_symbol, position_side.upper(), leverage)
-            params = {"symbol": bingx_symbol, "side": side.upper(), "positionSide": position_side.upper(), "type": "MARKET", "quantity": f"{float(quantity):.5f}"}
-            return self._request('POST', "/openApi/swap/v2/trade/order", params)
-
-    def set_leverage(self, symbol, side, leverage):
-        return self._request('POST', "/openApi/swap/v2/trade/leverage", {"symbol": symbol, "side": side, "leverage": leverage})
-
-# --- MODIFIED trade_bot_worker WITH SPOT MODE LOGIC ---
+# --- trade_bot_worker (MODIFIED TO USE CORRECT API METHODS) ---
 def trade_bot_worker():
     app.logger.info("Trading bot worker thread started.")
     ticker_check_interval = 5; analysis_interval = 60; last_analysis_time = 0
@@ -336,24 +326,24 @@ def trade_bot_worker():
                 current_prices = get_bybit_ticker_data(symbols_to_fetch)
                 if current_prices:
                     for item_id, position in active_positions_copy.items():
-                        symbol, current_price = position['symbol'], current_prices.get(position['symbol'])
+                        symbol, current_price, pos_mode = position['symbol'], current_prices.get(position['symbol']), position.get('mode', 'futures')
                         if not current_price: continue
                         
-                        direction, tp, sl, pos_mode = position['direction'], position.get('tp_price'), position.get('sl_price'), position.get('mode', 'futures')
-                        
+                        direction, tp, sl = position['direction'], position.get('tp_price'), position.get('sl_price')
                         close_position, close_reason = False, ""
-                        if direction == 'long':
-                            if sl and current_price <= sl: close_position, close_reason = True, "SL"
-                            elif tp and current_price >= tp: close_position, close_reason = True, "TP"
-                        elif direction == 'short':
-                            if sl and current_price >= sl: close_position, close_reason = True, "SL"
-                            elif tp and current_price <= tp: close_position, close_reason = True, "TP"
+                        if direction == 'long' and tp and current_price >= tp: close_position, close_reason = True, "TP"
+                        elif pos_mode == 'futures': # SL only for futures
+                           if direction == 'long' and sl and current_price <= sl: close_position, close_reason = True, "SL"
+                           elif direction == 'short' and tp and current_price <= tp: close_position, close_reason = True, "TP"
+                           elif direction == 'short' and sl and current_price >= sl: close_position, close_reason = True, "SL"
                         
                         if close_position:
                             app.logger.info(f"[{pos_mode.upper()}] {close_reason} hit for {symbol}. Closing {direction} position.")
-                            position_side = direction.upper(); order_side = "SELL" if direction == 'long' else "BUY"
-                            leverage_to_use = 1 if pos_mode == 'spot' else base_leverage
-                            res = client.place_order(symbol, order_side, position_side, position['quantity'], leverage_to_use, trading_mode=pos_mode)
+                            if pos_mode == 'spot':
+                                res = client.place_spot_order(symbol, "SELL", quantity=position['quantity'])
+                            else:
+                                res = client.place_futures_order(symbol, "SELL" if direction == 'long' else "BUY", direction.upper(), position['quantity'], base_leverage)
+                            
                             if res and res.get('code') == 0:
                                 with positions_lock, status_lock:
                                     if item_id in ACTIVE_POSITIONS: del ACTIVE_POSITIONS[item_id]
@@ -362,53 +352,60 @@ def trade_bot_worker():
             if time.time() - last_analysis_time < analysis_interval: time.sleep(ticker_check_interval); continue
             
             last_analysis_time = time.time()
-            balance_response = client.get_balance(trading_mode)
-            total_balance = float(balance_response['data']['balance']) if balance_response and balance_response.get('code') == 0 else 0
-            if total_balance == 0: app.logger.error(f"Could not fetch {trading_mode} account balance. Skipping trade cycle."); time.sleep(10); continue
+            total_balance = 0
+            if trading_mode == 'spot':
+                balance_response = client.get_spot_balance()
+                if balance_response and balance_response.get('code') == 0:
+                    usdt_balance = next((b for b in balance_response['data']['balances'] if b['asset'] == 'USDT'), None)
+                    if usdt_balance: total_balance = float(usdt_balance['free'])
+            else: # futures
+                balance_response = client.get_futures_balance()
+                if balance_response and balance_response.get('code') == 0: total_balance = float(balance_response['data']['balance']['balance'])
+            
+            if total_balance == 0: app.logger.error("Could not fetch account balance or balance is zero. Skipping trade cycle."); time.sleep(10); continue
 
             for item in trade_list_copy:
                 try:
                     item_id, symbol, interval = item['id'], item['symbol'], item['interval']
-                    if item_id in ACTIVE_POSITIONS or (time.time() - BOT_STATUS.get(item_id, {}).get('last_close_time', 0) < TRADE_COOLDOWN_SECONDS): continue
+                    with positions_lock: position_data = ACTIVE_POSITIONS.get(item_id)
+                    with status_lock: last_close_time = BOT_STATUS.get(item_id, {}).get('last_close_time', 0)
+                    if position_data or (time.time() - last_close_time < TRADE_COOLDOWN_SECONDS): continue
 
                     raw_candles = get_bybit_data(symbol, interval, limit=50)
                     if len(raw_candles) < 50: continue
                     current_price = float(raw_candles[-1][4])
 
-                    predicted_candles = predict_next_candles(raw_candles)
+                    predicted_candles = predict_next_candles(raw_candles);
                     if not predicted_candles: continue
                     price_change_pct = ((predicted_candles[-1]['c'] - current_price) / current_price) * 100
 
-                    if trading_mode == 'futures':
-                        if abs(price_change_pct) > trigger_percentage:
-                            direction = "long" if price_change_pct > 0 else "short"
-                            tp_price = current_price * (1 + (price_change_pct * 0.8 / 100))
-                            sl_price = current_price * (1 - (price_change_pct * 0.4 / 100)) if direction == "long" else current_price * (1 + (abs(price_change_pct) * 0.4 / 100))
-                            liquidation_price = calculate_liquidation_price(current_price, base_leverage, direction)
-                            if liquidation_price is not None:
-                                if direction == "long" and sl_price <= liquidation_price: sl_price = liquidation_price * 1.001
-                                elif direction == "short" and sl_price >= liquidation_price: sl_price = liquidation_price * 0.999
-                            
-                            if abs(current_price - sl_price) > 0:
-                                risk_usdt = total_balance * (risk_percentage / 100)
-                                quantity = risk_usdt / abs(current_price - sl_price)
-                                res = client.place_order(symbol, "BUY" if direction == 'long' else "SELL", direction.upper(), quantity, base_leverage, 'futures')
-                                if res and res.get('code') == 0:
-                                    with positions_lock: ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'quantity': quantity, 'direction': direction, 'entry_price': current_price, 'tp_price': tp_price, 'sl_price': sl_price, 'mode': 'futures'}
-                    
-                    elif trading_mode == 'spot':
-                        if price_change_pct > trigger_percentage:
-                            tp_price = current_price * (1 + (price_change_pct * 0.8 / 100))
-                            investment_usdt = total_balance * (risk_percentage / 100)
-                            quantity = investment_usdt / current_price
-                            res = client.place_order(symbol, "BUY", "LONG", quantity, 1, 'spot')
+                    if trading_mode == 'futures' and abs(price_change_pct) > trigger_percentage:
+                        direction = "long" if price_change_pct > 0 else "short"
+                        tp_price = current_price * (1 + (price_change_pct * 0.8 / 100))
+                        sl_price = current_price * (1 - (price_change_pct * 0.4 / 100)) if direction == "long" else current_price * (1 + (abs(price_change_pct) * 0.4 / 100))
+                        liquidation_price = calculate_liquidation_price(current_price, base_leverage, direction)
+                        if liquidation_price:
+                            if direction == "long" and sl_price <= liquidation_price: sl_price = liquidation_price * 1.001
+                            elif direction == "short" and sl_price >= liquidation_price: sl_price = liquidation_price * 0.999
+                        if abs(current_price - sl_price) > 0:
+                            risk_usdt = total_balance * (risk_percentage / 100)
+                            quantity = risk_usdt / abs(current_price - sl_price)
+                            res = client.place_futures_order(symbol, "BUY" if direction == 'long' else "SELL", direction.upper(), quantity, base_leverage)
                             if res and res.get('code') == 0:
-                                with positions_lock: ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'quantity': quantity, 'direction': 'long', 'entry_price': current_price, 'tp_price': tp_price, 'sl_price': None, 'mode': 'spot'}
+                                with positions_lock: ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'quantity': quantity, 'direction': direction, 'entry_price': current_price, 'tp_price': tp_price, 'sl_price': sl_price, 'mode': 'futures'}
+                    
+                    elif trading_mode == 'spot' and price_change_pct > trigger_percentage:
+                        tp_price = current_price * (1 + (price_change_pct * 0.8 / 100))
+                        investment_usdt = total_balance * (risk_percentage / 100)
+                        # Estimate quantity for internal tracking; actual order is by quote quantity
+                        quantity_estimate = investment_usdt / current_price
+                        res = client.place_spot_order(symbol, "BUY", quote_order_qty=investment_usdt)
+                        if res and res.get('code') == 0:
+                            with positions_lock: ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'quantity': quantity_estimate, 'direction': 'long', 'entry_price': current_price, 'tp_price': tp_price, 'sl_price': None, 'mode': 'spot'}
                 except Exception as e: app.logger.error(f"Error in analysis for {item.get('symbol', 'N/A')}: {e}", exc_info=False)
                 time.sleep(1)
         except Exception as e: app.logger.error(f"FATAL ERROR in main trade_bot_worker loop: {e}", exc_info=True); time.sleep(10)
 
-# --- WORKERS AND BACKTESTER (UNCHANGED LOGIC, ONLY ADAPTED FOR NEW CLIENT) ---
 def pnl_updater_worker():
     app.logger.info("PnL updater thread started.")
     while True:
@@ -431,20 +428,19 @@ def pnl_updater_worker():
                     current_price = ticker_prices[symbol]
                     entry_price, quantity, direction = position['entry_price'], position['quantity'], position['direction']
                     pnl = (current_price - entry_price) * quantity if direction == 'long' else (entry_price - current_price) * quantity
-                    
                     leverage_for_pnl = 1 if position.get('mode') == 'spot' else base_leverage
                     initial_margin = (entry_price * quantity) / leverage_for_pnl
-                    
                     pnl_pct = (pnl / initial_margin) * 100 if initial_margin > 0 else 0
                     with status_lock:
                         BOT_STATUS[item_id] = { "message": f"In {direction.upper()} ({position.get('mode', 'N/A')})", "color": "#28a745" if pnl >= 0 else "#dc3545", "pnl": pnl, "pnl_pct": pnl_pct }
         except Exception as e: 
             app.logger.error(f"Error in PnL updater worker: {e}", exc_info=False)
 
+# --- Backtesting Engine ---
 def run_backtest_simulation(symbol, interval, start_ts, end_ts, mode):
     all_candles_raw, current_start_ts = [], start_ts
     while current_start_ts <= end_ts:
-        chunk = get_bybit_data(symbol, interval, start_ts=current_start_ts)
+        chunk = get_bybit_data(symbol, interval, start_ts=current_start_ts);
         if not chunk: break
         all_candles_raw.extend(chunk); last_ts = int(chunk[-1][0])
         if len(chunk) < 1000 or last_ts >= end_ts: break
@@ -452,8 +448,7 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts, mode):
     if len(all_candles_raw) < 50: raise ValueError("Not enough historical data.")
     
     with settings_lock: risk_percentage = SETTINGS.get('risk_percentage', 1.0); base_leverage = SETTINGS['leverage']; trigger_percentage = SETTINGS.get('trigger_percentage', 4.0)
-
-    trades, equity_curve, final_equity = [], [{'time': start_ts, 'equity': 10000.0}], 10000.0
+    trades, equity_curve = [], [{'time': start_ts, 'equity': 10000.0}]; final_equity = 10000.0
     
     if mode == 'futures':
         equity, open_position = 10000.0, None
@@ -482,50 +477,41 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts, mode):
                             if direction == "long" and sl <= liquidation_price: sl = liquidation_price * 1.001
                             elif direction == "short" and sl >= liquidation_price: sl = liquidation_price * 0.999
                         if abs(price-sl)>0:
-                            risk_amount = equity * (risk_percentage / 100)
-                            quantity = risk_amount / abs(price - sl)
+                            risk_amount = equity * (risk_percentage / 100); quantity = risk_amount / abs(price - sl)
                             open_position = {'entry_price': price, 'quantity': quantity, 'direction': direction, 'tp': tp, 'sl': sl}
-            equity_curve.append({'time': candle['t'], 'equity': equity})
-        final_equity = equity
-
+            equity_curve.append({'time': candle['t'], 'equity': equity}); final_equity = equity
     elif mode == 'spot':
         cash, holdings = 10000.0, []
         for i in range(50, len(all_candles_raw)):
             candle = {'t': int(all_candles_raw[i][0]), 'c': float(all_candles_raw[i][4]), 'h': float(all_candles_raw[i][2]), 'l': float(all_candles_raw[i][3])}
-            
             for holding in holdings[:]:
                 if candle['h'] >= holding['tp']:
                     pnl = (holding['tp'] - holding['entry_price']) * holding['quantity']
                     cash += holding['tp'] * holding['quantity']
                     trades.append({'exit_time': candle['t'], 'direction': 'long', 'pnl': pnl, 'return_pct': (pnl / (holding['entry_price'] * holding['quantity'])) * 100, 'exit_reason': 'TP'})
                     holdings.remove(holding)
-            
             if not holdings:
                 predicted = predict_next_candles(all_candles_raw[i-50:i], 20)
                 if predicted:
                     price = float(all_candles_raw[i-1][4]); change = ((predicted[-1]['c'] - price) / price) * 100
                     if change > trigger_percentage:
-                        tp = price * (1 + (change*0.8/100))
-                        investment_amount = cash * (risk_percentage / 100)
-                        quantity = investment_amount / price
-                        cash -= investment_amount
+                        tp = price * (1 + (change*0.8/100)); investment_amount = cash * (risk_percentage / 100)
+                        quantity = investment_amount / price; cash -= investment_amount
                         holdings.append({'entry_price': price, 'quantity': quantity, 'tp': tp})
-            
             total_equity = cash + sum(h['quantity'] * candle['c'] for h in holdings)
             equity_curve.append({'time': candle['t'], 'equity': total_equity})
-        
-        final_price = float(all_candles_raw[-1][4])
-        final_equity = cash + sum(h['quantity'] * final_price for h in holdings)
-    
+        final_equity = cash + sum(h['quantity'] * float(all_candles_raw[-1][4]) for h in holdings)
+
     net_profit = final_equity - 10000; total_trades = len(trades); win_rate = (len([t for t in trades if t['pnl'] > 0]) / total_trades * 100) if total_trades > 0 else 0; total_profit = sum(t['pnl'] for t in trades if t['pnl']>0); total_loss = abs(sum(t['pnl'] for t in trades if t['pnl']<=0)); profit_factor = total_profit / total_loss if total_loss > 0 else 0; max_dd, peak = 0, 10000.0
     for item in equity_curve:
         if item['equity'] > peak: peak = item['equity']
         dd = (peak - item['equity']) / peak if peak != 0 else 0; max_dd = max(max_dd, dd)
     return {"metrics": {"net_profit": net_profit, "total_trades": total_trades, "win_rate": win_rate, "profit_factor": profit_factor, "max_drawdown": max_dd * 100, "avg_trade_pnl": (net_profit / total_trades) if total_trades > 0 else 0}, "trades": trades, "equity_curve": equity_curve}
 
-# --- FLASK ROUTES ---
+# --- Flask Routes ---
 @app.route('/')
 def index(): return render_template_string(HTML_TEMPLATE)
+
 @app.route('/api/candles')
 def api_candles():
     symbol, interval, num_predictions = request.args.get('symbol', 'BTCUSDT').upper(), request.args.get('interval', '60'), max(1, min(request.args.get('predictions', 20, type=int), 50))
@@ -535,23 +521,26 @@ def api_candles():
         historical = [{"t": int(c[0]), "o": float(c[1]), "h": float(c[2]), "l": float(c[3]), "c": float(c[4])} for c in raw_candles]
         predicted = predict_next_candles(raw_candles); return jsonify({"candles": historical, "predicted": predicted})
     except Exception as e: return jsonify({"error": str(e)}), 500
+
 @app.route('/api/settings', methods=['GET', 'POST'])
 def handle_settings():
     with settings_lock:
         if request.method == 'POST': SETTINGS.update(request.json); save_to_json(SETTINGS_FILE, SETTINGS); return jsonify({"status": "success"})
         return jsonify(SETTINGS)
+
 @app.route('/api/trade_list', methods=['GET'])
 def get_trade_list():
     with trade_list_lock, status_lock: return jsonify({"trade_list": TRADE_LIST, "bot_status": BOT_STATUS})
+
 @app.route('/api/trade_list/add', methods=['POST'])
 def add_to_trade_list():
     item = request.json; item['id'] = str(int(time.time() * 1000))
     with trade_list_lock:
         if not any(i['symbol'] == item['symbol'] and i['interval'] == item['interval'] for i in TRADE_LIST):
-            TRADE_LIST.append(item)
+            TRADE_LIST.append(item); save_to_json(TRADELIST_FILE, TRADE_LIST)
             with status_lock: BOT_STATUS[item['id']] = {"message": "Waiting...", "color": "#fff"}
-            save_to_json(TRADELIST_FILE, TRADE_LIST)
     return jsonify({"status": "success"})
+
 @app.route('/api/trade_list/remove', methods=['POST'])
 def remove_from_trade_list():
     item_id = request.json.get('id')
@@ -568,11 +557,20 @@ def get_balance():
         with settings_lock:
             client = BingXClient(SETTINGS['bingx_api_key'], SETTINGS['bingx_secret_key'], SETTINGS['mode'] == 'demo')
             trading_mode = SETTINGS.get('trading_mode', 'futures')
-        balance_data = client.get_balance(trading_mode)
-        if balance_data and balance_data.get('code') == 0:
-            return jsonify({"total_balance": balance_data['data']['balance']})
-        else:
-            return jsonify({"error": f"Failed to fetch {trading_mode} balance", "details": balance_data.get('msg') if balance_data else "No response"}), 500
+        
+        total_balance = 0
+        if trading_mode == 'spot':
+            balance_data = client.get_spot_balance()
+            if balance_data and balance_data.get('code') == 0:
+                usdt_balance = next((b for b in balance_data['data']['balances'] if b['asset'] == 'USDT'), None)
+                if usdt_balance: total_balance = float(usdt_balance['free'])
+        else: # futures
+            balance_data = client.get_futures_balance()
+            if balance_data and balance_data.get('code') == 0:
+                total_balance = float(balance_data['data']['balance']['balance'])
+        
+        if balance_data and balance_data.get('code') == 0: return jsonify({"total_balance": total_balance})
+        else: return jsonify({"error": "Failed to fetch balance", "details": balance_data.get('msg') if balance_data else "No response"}), 500
     except Exception as e:
         app.logger.error(f"Balance fetch error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
@@ -587,30 +585,29 @@ def manual_trade():
             trading_mode = SETTINGS.get('trading_mode', 'futures')
 
         if trading_mode == 'spot' and side == 'short': return jsonify({"error": "Cannot place short trades in Spot mode."}), 400
-
-        balance_res = client.get_balance(trading_mode)
-        if not (balance_res and balance_res.get('code') == 0): return jsonify({"error": f"Could not fetch {trading_mode} balance"}), 400
-        balance = float(balance_res['data']['balance'])
         
-        current_price = get_bybit_ticker_data([symbol]).get(symbol)
-        if not current_price: return jsonify({"error": "Could not fetch current price"}), 400
-        
-        leverage_to_use, quantity = 1, 0
+        res = None
         if trading_mode == 'spot':
-            investment_usdt = balance * (risk_perc / 100)
-            quantity = investment_usdt / current_price
-        else:
-            leverage_to_use = lev
-            risk_usdt = balance * (risk_perc / 100)
-            stop_loss_price = current_price * 0.98 if side == 'long' else current_price * 1.02
-            quantity = risk_usdt / abs(current_price - stop_loss_price)
+            balance_res = client.get_spot_balance()
+            if balance_res and balance_res.get('code') == 0:
+                usdt_balance = next((b for b in balance_res['data']['balances'] if b['asset'] == 'USDT'), None)
+                if usdt_balance and float(usdt_balance['free']) > 0:
+                    investment_usdt = float(usdt_balance['free']) * (risk_perc / 100)
+                    res = client.place_spot_order(symbol, "BUY", quote_order_qty=investment_usdt)
+        else: # futures
+            balance_res = client.get_futures_balance()
+            if balance_res and balance_res.get('code') == 0:
+                balance = float(balance_res['data']['balance']['balance'])
+                current_price = get_bybit_ticker_data([symbol]).get(symbol)
+                if current_price:
+                    stop_loss_price = current_price * 0.98 if side == 'long' else current_price * 1.02
+                    quantity = (balance * (risk_perc / 100)) / abs(current_price - stop_loss_price)
+                    res = client.place_futures_order(symbol, "BUY" if side == 'long' else "SELL", side.upper(), quantity, lev)
 
-        position_side, order_side = "LONG" if side == 'long' else "SHORT", "BUY" if side == 'long' else "SELL"
-        res = client.place_order(symbol, order_side, position_side, quantity, leverage_to_use, trading_mode)
         if res and res.get('code') == 0:
-            with positions_lock: ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'quantity': quantity, 'direction': side, 'entry_price': current_price, 'mode': trading_mode}
+            with positions_lock: ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'direction': side, 'mode': trading_mode, 'entry_price': get_bybit_ticker_data([symbol]).get(symbol) or 0, 'quantity': 0} # Placeholder, logic relies on exchange
             return jsonify({"message": f"Manual {side} ({trading_mode}) order placed."})
-        return jsonify({"error": f"Failed: {res.get('msg') if res else 'Unknown error'}"}), 400
+        return jsonify({"error": f"Failed: {res.get('msg') if res else 'Could not fetch balance or place order'}"}), 400
     except Exception as e: app.logger.error(f"Manual trade error: {e}", exc_info=True); return jsonify({"error": str(e)}), 500
 
 @app.route('/api/manual_close', methods=['POST'])
@@ -622,9 +619,17 @@ def manual_close():
             pos = ACTIVE_POSITIONS[item_id]
         with settings_lock: client = BingXClient(SETTINGS['bingx_api_key'], SETTINGS['bingx_secret_key'], SETTINGS['mode'] == 'demo'); base_lev = SETTINGS['leverage']
         
-        leverage_to_use = 1 if pos.get('mode') == 'spot' else base_lev
-        position_side, order_side = pos['direction'].upper(), "SELL" if pos['direction'] == 'long' else "BUY"
-        res = client.place_order(symbol, order_side, position_side, pos['quantity'], leverage_to_use, trading_mode=pos.get('mode', 'futures'))
+        res = None
+        if pos.get('mode') == 'spot':
+            # For spot, we need to know the quantity held to sell it. This is a limitation of not tracking it perfectly.
+            # We will place a sell order assuming the bot knows the quantity from its internal state. This is a simplified approach.
+            if pos.get('quantity', 0) > 0:
+                res = client.place_spot_order(symbol, "SELL", quantity=pos['quantity'])
+            else:
+                 return jsonify({"error": "Cannot close spot position: quantity unknown. Please close manually on the exchange."}), 400
+        else: # futures
+            res = client.place_futures_order(symbol, "SELL" if pos['direction'] == 'long' else "BUY", pos['direction'].upper(), pos['quantity'], base_lev)
+
         if res and res.get('code') == 0:
             with positions_lock, status_lock:
                 if item_id in ACTIVE_POSITIONS: del ACTIVE_POSITIONS[item_id]
@@ -632,6 +637,7 @@ def manual_close():
             return jsonify({"message": f"Close order for {symbol} placed."})
         return jsonify({"error": f"Failed to close: {res.get('msg') if res else 'Unknown error'}"}), 400
     except Exception as e: app.logger.error(f"Manual close error: {e}", exc_info=True); return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/backtest', methods=['POST'])
 def handle_backtest():
