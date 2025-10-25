@@ -1,5 +1,5 @@
 # ==============================================================================
-# Exora Quant AI - v3.8 with Bot-Side TP/SL Management & Liquidation Guard
+# Exora Quant AI - v3.8.1 with Spot Mode Backtesting
 # ==============================================================================
 # This version is MODIFIED to fetch all price and candle data from the
 # Bybit PERPETUAL (linear) market instead of the SPOT market. This aligns
@@ -8,6 +8,7 @@
 # THIS VERSION adds a configurable "Trigger Percentage" to the web UI.
 # THIS VERSION IS MODIFIED to use percentage-based risk and display total balance.
 # THIS VERSION ADDS a liquidation detection feature to adjust SL and prevent liquidation.
+# THIS VERSION ADDS A "SPOT MODE" to the backtesting engine for unleveraged, buy-only strategies.
 # ==============================================================================
 
 import time
@@ -85,14 +86,14 @@ app = Flask(__name__)
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-# --- HTML & JavaScript Template (MODIFIED) ---
+# --- HTML & JavaScript Template (MODIFIED with SPOT MODE UI) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Exora Quant AI v3.8 (Balance/Risk Mod)</title>
+    <title>Exora Quant AI v3.8.1 (Spot Backtest Mod)</title>
     <style>
         html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #000; color: #eee; font-size: 14px; }
         #chartdiv { width: 100%; height: calc(100% - 250px); }
@@ -119,14 +120,47 @@ HTML_TEMPLATE = """
         #trade-list-table th { color: #aaa; }
         .manual-trade-btn { padding: 4px 8px; font-size: 12px; margin-right: 4px; border-radius: 4px; }
         .long-btn { background-color: #28a745; border-color: #28a745; } .short-btn { background-color: #dc3545; border-color: #dc3545; } .close-btn { background-color: #ffc107; border-color: #ffc107; color: #000; } .remove-btn { background-color: #6c757d; border-color: #6c757d; padding: 4px 8px; font-size: 12px; }
-        #backtest-panel { width: 450px; display: flex; flex-direction: column; } #backtest-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; } #backtest-controls input[type="date"] { width: 130px; } #run-backtest-btn { background-color: #17a2b8; border-color: #17a2b8; } #backtest-results { flex-grow: 1; overflow-y: auto; display: none; } #equitychartdiv { width: 100%; height: 100px; margin-bottom: 10px; transition: height 0.3s ease-in-out; } #backtest-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px 15px; margin-bottom: 10px; font-size: 12px; } #backtest-stats div > span { font-weight: bold; color: #00aaff; } #backtest-trades-table { width: 100%; font-size: 11px; } #toggle-backtest-size-btn { float: right; background: #333; border: 1px solid #555; color: #ccc; cursor: pointer; padding: 1px 7px; font-size: 16px; border-radius: 4px; line-height: 1; }
+        
+        #backtest-panel { width: 450px; display: flex; flex-direction: column; }
+        #backtest-controls { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px 10px; margin-bottom: 10px; font-size: 12px; }
+        .bt-control-group { display: flex; flex-direction: column; gap: 5px; }
+        .bt-control-group > div { display: flex; align-items: center; gap: 5px; }
+        .bt-control-group label { min-width: 50px; text-align: right; color: #bbb; }
+        .bt-control-group input, .bt-control-group select { width: 100%; box-sizing: border-box; padding: 4px; border-radius: 4px; border: 1px solid #444; background-color: #2a2a2a; color: #eee; }
+        input:disabled { background-color: #222; color: #777; }
+        #run-backtest-btn-container { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; margin-top: 5px; }
+        #run-backtest-btn { background-color: #17a2b8; border-color: #17a2b8; padding: 6px 12px; flex-grow: 1; }
+        #backtest-status { color: #ffc107; }
+
+        #backtest-results { flex-grow: 1; overflow-y: auto; display: none; margin-top: 5px; } #equitychartdiv { width: 100%; height: 100px; margin-bottom: 10px; transition: height 0.3s ease-in-out; } #backtest-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px 15px; margin-bottom: 10px; font-size: 12px; } #backtest-stats div > span { font-weight: bold; color: #00aaff; } #backtest-trades-table { width: 100%; font-size: 11px; } #toggle-backtest-size-btn { float: right; background: #333; border: 1px solid #555; color: #ccc; cursor: pointer; padding: 1px 7px; font-size: 16px; border-radius: 4px; line-height: 1; }
         .panels-container.is-maximized { height: calc(100% - 40px); } .panels-container.is-maximized #chartdiv { height: 40px; } .panels-container.is-maximized #settings-panel, .panels-container.is-maximized #tradelist-panel { display: none; } .panels-container.is-maximized #backtest-panel { width: 100%; } .panels-container.is-maximized #backtest-results { height: calc(100% - 60px); } .panels-container.is-maximized #equitychartdiv { height: 300px; } .panels-container.is-maximized #backtest-trades-table-container { flex-grow: 1; }
     </style>
     <script src="https://cdn.amcharts.com/lib/5/index.js"></script><script src="https://cdn.amcharts.com/lib/5/xy.js"></script><script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script><script src="https://cdn.amcharts.com/lib/5/themes/Dark.js"></script>
 </head>
 <body>
     <div id="chartdiv"></div><div class="controls-wrapper"><button id="toggle-controls-btn" title="Toggle Controls">☰</button><div class="controls-overlay"><label for="symbol">Symbol:</label><input type="text" id="symbol" value="BTCUSDT"><label for="interval">Timeframe:</label><select id="interval"><option value="60">1 hour</option><option value="240">4 hours</option><option value="D">Daily</option></select><label for="num_predictions">Predictions:</label><input type="number" id="num_predictions" value="20" min="1" max="50"><button id="fetchButton">Fetch</button><button id="add-to-list-btn" class="add-btn">Add to Trade List</button><div id="status"></div></div></div>
-    <div class="panels-container"><div id="settings-panel" class="panel"><h3>Settings</h3><div id="balance-display" style="padding: 5px 0 10px; font-size: 1.1em; color: #ffeb3b; border-bottom: 1px solid #444; margin-bottom: 10px;">Balance: Loading...</div><div class="setting-item"><label for="api-key">API Key:</label><input type="text" id="api-key"></div><div class="setting-item"><label for="secret-key">Secret Key:</label><input type="password" id="secret-key"></div><div class="setting-item"><label for="mode">Mode:</label><select id="mode"><option value="demo">Demo</option><option value="live">Live</option></select></div><div class="setting-item"><label for="risk-percentage">Risk (%):</label><input type="number" id="risk-percentage" value="1.0" step="0.1" min="0.1"></div><div class="setting-item"><label for="leverage">Leverage:</label><input type="number" id="leverage" value="10"></div><div class="setting-item"><label for="trigger-percentage">Trigger %:</label><input type="number" id="trigger-percentage" value="4.0" step="0.1" min="0"></div><button id="save-settings-btn">Save Settings</button></div><div id="tradelist-panel" class="panel"><h3>Live Trade List</h3><table id="trade-list-table"><thead><tr><th>Symbol</th><th>Timeframe</th><th>Status</th><th>PnL</th><th>Manual Control</th></tr></thead><tbody></tbody></table></div><div id="backtest-panel" class="panel"><h3>Backtest <button id="toggle-backtest-size-btn" title="Maximize">□</button></h3><div id="backtest-controls"><input type="text" id="backtest-symbol" value="BTCUSDT"><select id="backtest-interval"><option value="60">1 hour</option><option value="240">4 hours</option><option value="D">Daily</option></select><input type="date" id="backtest-start"><input type="date" id="backtest-end"><button id="run-backtest-btn">Run</button><div id="backtest-status" style="color: #ffc107;"></div></div><div id="backtest-results"><div id="equitychartdiv"></div><div id="backtest-stats"></div><div id="backtest-trades-table-container" style="height: 80px; overflow-y: auto;"><table id="backtest-trades-table" class="trade-list-table"><thead><tr><th>Exit Time</th><th>Side</th><th>PnL</th><th>Return %</th><th>Reason</th></tr></thead><tbody></tbody></table></div></div></div></div>
+    <div class="panels-container"><div id="settings-panel" class="panel"><h3>Settings</h3><div id="balance-display" style="padding: 5px 0 10px; font-size: 1.1em; color: #ffeb3b; border-bottom: 1px solid #444; margin-bottom: 10px;">Balance: Loading...</div><div class="setting-item"><label for="api-key">API Key:</label><input type="text" id="api-key"></div><div class="setting-item"><label for="secret-key">Secret Key:</label><input type="password" id="secret-key"></div><div class="setting-item"><label for="mode">Mode:</label><select id="mode"><option value="demo">Demo</option><option value="live">Live</option></select></div><div class="setting-item"><label for="risk-percentage">Risk (%):</label><input type="number" id="risk-percentage" value="1.0" step="0.1" min="0.1"></div><div class="setting-item"><label for="leverage">Leverage:</label><input type="number" id="leverage" value="10"></div><div class="setting-item"><label for="trigger-percentage">Trigger %:</label><input type="number" id="trigger-percentage" value="4.0" step="0.1" min="0"></div><button id="save-settings-btn">Save Settings</button></div><div id="tradelist-panel" class="panel"><h3>Live Trade List</h3><table id="trade-list-table"><thead><tr><th>Symbol</th><th>Timeframe</th><th>Status</th><th>PnL</th><th>Manual Control</th></tr></thead><tbody></tbody></table></div>
+    <div id="backtest-panel" class="panel"><h3>Backtest <button id="toggle-backtest-size-btn" title="Maximize">□</button></h3>
+        <div id="backtest-controls">
+            <div class="bt-control-group">
+                <div><label for="backtest-symbol">Symbol:</label><input type="text" id="backtest-symbol" value="BTCUSDT"></div>
+                <div><label for="backtest-start">Start:</label><input type="date" id="backtest-start"></div>
+                <div><label for="backtest-equity">Equity:</label><input type="number" id="backtest-equity" value="10000"></div>
+                <div><label for="backtest-risk">Risk %:</label><input type="number" id="backtest-risk" value="1.0" step="0.1"></div>
+            </div>
+            <div class="bt-control-group">
+                <div><label for="backtest-interval">TF:</label><select id="backtest-interval"><option value="60">1 hour</option><option value="240">4 hours</option><option value="D">Daily</option></select></div>
+                <div><label for="backtest-end">End:</label><input type="date" id="backtest-end"></div>
+                <div><label for="backtest-mode">Mode:</label><select id="backtest-mode"><option value="futures">Futures</option><option value="spot" selected>Spot</option></select></div>
+                <div><label for="backtest-leverage">Lev:</label><input type="number" id="backtest-leverage" value="10" min="1"></div>
+            </div>
+            <div id="run-backtest-btn-container">
+                <button id="run-backtest-btn">Run Backtest</button>
+                <div id="backtest-status">Ready</div>
+            </div>
+        </div>
+        <div id="backtest-results"><div id="equitychartdiv"></div><div id="backtest-stats"></div><div id="backtest-trades-table-container" style="height: 80px; overflow-y: auto;"><table id="backtest-trades-table" class="trade-list-table"><thead><tr><th>Exit Time</th><th>Side</th><th>PnL</th><th>Return %</th><th>Reason</th></tr></thead><tbody></tbody></table></div></div>
+    </div></div>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     let root, chart, equityRoot;
@@ -141,10 +175,10 @@ document.addEventListener('DOMContentLoaded', function () {
     async function removeTradeItem(id) { await fetch('/api/trade_list/remove', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ id: id }) }); refreshTradeList(); };
     async function refreshBalance() { try { const response = await fetch('/api/balance'); if (!response.ok) { document.getElementById('balance-display').textContent = 'Balance: Error'; return; } const data = await response.json(); if (data.total_balance !== undefined) { document.getElementById('balance-display').textContent = `Balance: ${data.total_balance.toFixed(2)} USDT`; } else { document.getElementById('balance-display').textContent = `Balance: ${data.error || 'N/A'}`; } } catch (error) { document.getElementById('balance-display').textContent = 'Balance: Network Error'; } }
     let backtestRunning = false;
-    async function runBacktest() { if (backtestRunning) return; backtestRunning = true; const statusEl = document.getElementById('backtest-status'); const resultsEl = document.getElementById('backtest-results'); statusEl.textContent = 'Fetching historical data...'; resultsEl.style.display = 'none'; const payload = { symbol: document.getElementById('backtest-symbol').value.toUpperCase(), interval: document.getElementById('backtest-interval').value, start_date: document.getElementById('backtest-start').value, end_date: document.getElementById('backtest-end').value, }; try { statusEl.textContent = 'Running simulation...'; const response = await fetch('/api/backtest', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }); if (!response.ok) throw new Error((await response.json()).error); const results = await response.json(); displayBacktestResults(results); statusEl.textContent = 'Backtest complete.'; } catch (error) { statusEl.textContent = `Error: ${error.message}`; } finally { backtestRunning = false; } }
+    async function runBacktest() { if (backtestRunning) return; backtestRunning = true; const statusEl = document.getElementById('backtest-status'); const resultsEl = document.getElementById('backtest-results'); statusEl.textContent = 'Fetching data...'; resultsEl.style.display = 'none'; const payload = { symbol: document.getElementById('backtest-symbol').value.toUpperCase(), interval: document.getElementById('backtest-interval').value, start_date: document.getElementById('backtest-start').value, end_date: document.getElementById('backtest-end').value, equity: parseFloat(document.getElementById('backtest-equity').value), leverage: parseInt(document.getElementById('backtest-leverage').value), risk_percentage: parseFloat(document.getElementById('backtest-risk').value), mode: document.getElementById('backtest-mode').value, trigger_percentage: parseFloat(document.getElementById('trigger-percentage').value) }; try { statusEl.textContent = 'Running...'; const response = await fetch('/api/backtest', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }); if (!response.ok) throw new Error((await response.json()).error); const results = await response.json(); displayBacktestResults(results); statusEl.textContent = 'Complete.'; } catch (error) { statusEl.textContent = `Error: ${error.message}`; } finally { backtestRunning = false; } }
     function displayBacktestResults(results) { document.getElementById('backtest-results').style.display = 'block'; const stats = results.metrics; const statsEl = document.getElementById('backtest-stats'); statsEl.innerHTML = `<div>Net Profit: <span style="color:${stats.net_profit > 0 ? '#28a745' : '#dc3545'}">${stats.net_profit.toFixed(2)} USDT</span></div><div>Win Rate: <span>${stats.win_rate.toFixed(2)}%</span></div><div>Profit Factor: <span>${stats.profit_factor.toFixed(2)}</span></div><div>Total Trades: <span>${stats.total_trades}</span></div><div>Avg Trade PnL: <span>${stats.avg_trade_pnl.toFixed(2)}</span></div><div>Max Drawdown: <span style="color:#dc3545">${stats.max_drawdown.toFixed(2)}%</span></div>`; const tradesTableBody = document.querySelector('#backtest-trades-table tbody'); tradesTableBody.innerHTML = ''; results.trades.forEach(trade => { const pnlColor = trade.pnl > 0 ? '#28a745' : '#dc3545'; const row = `<tr><td>${new Date(trade.exit_time).toLocaleString()}</td><td>${trade.direction}</td><td style="color:${pnlColor}">${trade.pnl.toFixed(2)}</td><td style="color:${pnlColor}">${trade.return_pct.toFixed(2)}%</td><td>${trade.exit_reason || 'N/A'}</td></tr>`; tradesTableBody.insertAdjacentHTML('afterbegin', row); }); createEquityChart(results.equity_curve); }
-    function createEquityChart(data) { if (equityRoot) equityRoot.dispose(); equityRoot = am5.Root.new("equitychartdiv"); equityRoot.setThemes([am5themes_Dark.new(equityRoot)]); let chart = equityRoot.container.children.push(am5xy.XYChart.new(equityRoot, { panX: true, wheelX: "zoomX", pinchZoomX: true, paddingLeft: 0, paddingRight: 0 })); let xAxis = chart.xAxes.push(am5xy.DateAxis.new(equityRoot, { baseInterval: { timeUnit: "day", count: 1 }, renderer: am5xy.AxisRendererX.new(equityRoot, { minGridDistance: 50 }), })); let yAxis = chart.yAxes.push(am5xy.ValueAxis.new(equityRoot, { renderer: am5xy.AxisRendererY.new(equityRoot, {}) })); let series = chart.series.push(am5xy.LineSeries.new(equityRoot, { name: "Equity", xAxis: xAxis, yAxis: yAxis, valueYField: "equity", valueXField: "time", stroke: am5.color(0x00aaff), fill: am5.color(0x00aaff), })); series.fills.template.setAll({ fillOpacity: 0.1, visible: true }); series.data.setAll(data); }
-    function initialize() { loadSettings(); refreshTradeList(); refreshBalance(); setInterval(refreshTradeList, 1000); setInterval(refreshBalance, 10000); const today = new Date(); const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1); const threeMonthsAgo = new Date(today); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3); document.getElementById('backtest-end').valueAsDate = yesterday; document.getElementById('backtest-start').valueAsDate = threeMonthsAgo; document.getElementById('toggle-controls-btn').addEventListener('click', () => document.querySelector('.controls-overlay').classList.toggle('hidden')); document.getElementById('fetchButton').addEventListener('click', fetchChartData); document.getElementById('add-to-list-btn').addEventListener('click', addTradeItem); document.getElementById('save-settings-btn').addEventListener('click', saveSettings); document.getElementById('run-backtest-btn').addEventListener('click', runBacktest); document.getElementById('toggle-backtest-size-btn').addEventListener('click', (e) => { const btn = e.target; const container = document.querySelector('.panels-container'); const chartContainer = document.getElementById('chartdiv'); container.classList.toggle('is-maximized'); if (container.classList.contains('is-maximized')) { btn.textContent = '−'; btn.title = "Minimize"; chartContainer.style.height = '40px'; } else { btn.textContent = '□'; btn.title = "Maximize"; chartContainer.style.height = 'calc(100% - 250px)'; } setTimeout(() => { if (equityRoot) { equityRoot.resize(); } if (root) { root.resize(); } }, 350); }); }
+    function createEquityChart(data) { if (equityRoot) equityRoot.dispose(); equityRoot = am5.Root.new("equitychartdiv"); equityRoot.setThemes([am5themes_Dark.new(equityRoot)]); let chart = equityRoot.container.children.push(am5xy.XYChart.new(equityRoot, { panX: true, wheelX: "zoomX", pinchZoomX: true, paddingLeft: 0, paddingRight: 0 })); let xAxis = chart.xAxes.push(am5xy.DateAxis.new(equityRoot, { baseInterval: { timeUnit: "day", count: 1 }, renderer: am5xy.AxisRendererX.new(root, { minGridDistance: 50 }), })); let yAxis = chart.yAxes.push(am5xy.ValueAxis.new(equityRoot, { renderer: am5xy.AxisRendererY.new(root, {}) })); let series = chart.series.push(am5xy.LineSeries.new(equityRoot, { name: "Equity", xAxis: xAxis, yAxis: yAxis, valueYField: "equity", valueXField: "time", stroke: am5.color(0x00aaff), fill: am5.color(0x00aaff), })); series.fills.template.setAll({ fillOpacity: 0.1, visible: true }); series.data.setAll(data); }
+    function initialize() { loadSettings(); refreshTradeList(); refreshBalance(); setInterval(refreshTradeList, 1000); setInterval(refreshBalance, 10000); const today = new Date(); const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1); const threeMonthsAgo = new Date(today); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3); document.getElementById('backtest-end').valueAsDate = yesterday; document.getElementById('backtest-start').valueAsDate = threeMonthsAgo; document.getElementById('toggle-controls-btn').addEventListener('click', () => document.querySelector('.controls-overlay').classList.toggle('hidden')); document.getElementById('fetchButton').addEventListener('click', fetchChartData); document.getElementById('add-to-list-btn').addEventListener('click', addTradeItem); document.getElementById('save-settings-btn').addEventListener('click', saveSettings); document.getElementById('run-backtest-btn').addEventListener('click', runBacktest); document.getElementById('toggle-backtest-size-btn').addEventListener('click', (e) => { const btn = e.target; const container = document.querySelector('.panels-container'); const chartContainer = document.getElementById('chartdiv'); container.classList.toggle('is-maximized'); if (container.classList.contains('is-maximized')) { btn.textContent = '−'; btn.title = "Minimize"; chartContainer.style.height = '40px'; } else { btn.textContent = '□'; btn.title = "Maximize"; chartContainer.style.height = 'calc(100% - 250px)'; } setTimeout(() => { if (equityRoot) { equityRoot.resize(); } if (root) { root.resize(); } }, 350); }); const modeSelect = document.getElementById('backtest-mode'); const leverageInput = document.getElementById('backtest-leverage'); const riskInput = document.getElementById('backtest-risk'); function toggleMode(){ if(modeSelect.value === 'spot'){ leverageInput.disabled = true; riskInput.previousElementSibling.textContent = 'Inv %:'; } else { leverageInput.disabled = false; riskInput.previousElementSibling.textContent = 'Risk %:'; } } modeSelect.addEventListener('change', toggleMode); toggleMode(); }
     initialize();
 });
 </script>
@@ -155,16 +189,14 @@ document.addEventListener('DOMContentLoaded', function () {
 # --- NEW: Liquidation Calculation Helper ---
 def calculate_liquidation_price(entry_price, leverage, direction, maintenance_margin_rate=MAINTENANCE_MARGIN_RATE):
     """Calculates the approximate liquidation price for a given entry."""
-    if leverage <= 0: return None
+    if leverage <= 1: return None
     
     initial_margin_rate = 1 / leverage
     
     if direction == 'long':
-        # Formula for isolated margin: Liq. Price = Entry * (1 - Initial Margin % + Maintenance Margin %)
         price_change_percentage = initial_margin_rate - maintenance_margin_rate
         return entry_price * (1 - price_change_percentage)
     elif direction == 'short':
-        # Formula for isolated margin: Liq. Price = Entry * (1 + Initial Margin % - Maintenance Margin %)
         price_change_percentage = initial_margin_rate - maintenance_margin_rate
         return entry_price * (1 + price_change_percentage)
     return None
@@ -289,7 +321,6 @@ def trade_bot_worker():
                 leverage = SETTINGS['leverage']
                 trigger_percentage = SETTINGS.get('trigger_percentage', 4.0)
             
-            # --- High-frequency TP/SL and PnL monitoring ---
             with positions_lock:
                 active_positions_copy = dict(ACTIVE_POSITIONS)
                 symbols_to_fetch = list(set(pos['symbol'] for pos in active_positions_copy.values()))
@@ -328,7 +359,6 @@ def trade_bot_worker():
                 time.sleep(ticker_check_interval)
                 continue
             
-            app.logger.info("Starting new signal analysis cycle...")
             last_analysis_time = time.time()
             
             balance_response = client.get_balance()
@@ -341,7 +371,6 @@ def trade_bot_worker():
                 continue
             
             risk_usdt = total_balance * (risk_percentage / 100)
-            app.logger.info(f"Current Balance: {total_balance:.2f} USDT, Risk Amount for new trades: {risk_usdt:.2f} USDT")
 
             for item in trade_list_copy:
                 try:
@@ -368,11 +397,9 @@ def trade_bot_worker():
                             position_side, order_side = direction.upper(), "SELL" if is_long else "BUY"
                             res = client.place_order(symbol, order_side, position_side, position_data['quantity'], leverage)
                             if res and res.get('code') == 0:
-                                app.logger.info(f"Successfully auto-closed {symbol} position.")
                                 with positions_lock, status_lock:
                                     if item_id in ACTIVE_POSITIONS: del ACTIVE_POSITIONS[item_id]
                                     BOT_STATUS[item_id] = {"message": "Waiting...", "color": "#fff", "last_close_time": time.time()}
-                            else: app.logger.error(f"Failed to auto-close {symbol}: {res.get('msg') if res else 'Unknown error'}")
 
                     elif time.time() - last_close_time > TRADE_COOLDOWN_SECONDS:
                         if abs(price_change_pct) > trigger_percentage:
@@ -380,36 +407,25 @@ def trade_bot_worker():
                             tp_price = current_price * (1 + (price_change_pct * 0.8 / 100))
                             sl_price = current_price * (1 - (price_change_pct * 0.4 / 100)) if direction == "long" else current_price * (1 + (abs(price_change_pct) * 0.4 / 100))
                             
-                            # --- LIQUIDATION GUARD ---
                             liquidation_price = calculate_liquidation_price(current_price, leverage, direction)
                             if liquidation_price is not None:
                                 if direction == "long" and sl_price <= liquidation_price:
-                                    adjusted_sl = liquidation_price * 1.001
-                                    app.logger.warning(f"[{symbol}] Original SL ({sl_price:.4f}) breached liquidation price ({liquidation_price:.4f}). Adjusting SL to {adjusted_sl:.4f}.")
-                                    sl_price = adjusted_sl
+                                    sl_price = liquidation_price * 1.001
                                 elif direction == "short" and sl_price >= liquidation_price:
-                                    adjusted_sl = liquidation_price * 0.999
-                                    app.logger.warning(f"[{symbol}] Original SL ({sl_price:.4f}) breached liquidation price ({liquidation_price:.4f}). Adjusting SL to {adjusted_sl:.4f}.")
-                                    sl_price = adjusted_sl
+                                    sl_price = liquidation_price * 0.999
 
                             if abs(current_price - sl_price) > 0:
-                                # Quantity is calculated based on the final, potentially adjusted SL
                                 quantity = risk_usdt / abs(current_price - sl_price)
                                 position_side, order_side = direction.upper(), "BUY" if direction == 'long' else "SELL"
                                 
-                                app.logger.info(f"[AUTO-TRADE] Entry signal for {symbol}. Placing {direction} order with SL at {sl_price:.4f}.")
                                 res = client.place_order(symbol, order_side, position_side, quantity, leverage)
                                 
                                 if res and res.get('code') == 0:
-                                    app.logger.info(f"Successfully opened {direction} position for {symbol}.")
                                     with positions_lock:
                                         ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'quantity': quantity, 'direction': direction, 'entry_price': current_price, 'tp_price': tp_price, 'sl_price': sl_price}
-                                else:
-                                    app.logger.error(f"Failed to open position for {symbol}: {res.get('msg') if res else 'Unknown error'}")
                 except Exception as e:
                     app.logger.error(f"Error in analysis for {item.get('symbol', 'N/A')}: {e}", exc_info=False)
                 time.sleep(1)
-
         except Exception as e:
             app.logger.error(f"FATAL ERROR in main trade_bot_worker loop: {e}", exc_info=True)
             time.sleep(10)
@@ -444,69 +460,110 @@ def pnl_updater_worker():
             app.logger.error(f"Error in PnL updater worker: {e}", exc_info=False)
 
 
-# --- Backtesting Engine (MODIFIED with LIQUIDATION GUARD) ---
-def run_backtest_simulation(symbol, interval, start_ts, end_ts):
+# --- Backtesting Engine (MODIFIED with SPOT MODE and configurable parameters) ---
+def run_backtest_simulation(symbol, interval, start_ts, end_ts, mode, starting_equity, risk_percentage, leverage, trigger_percentage):
     all_candles_raw, current_start_ts = [], start_ts
     while current_start_ts <= end_ts:
         chunk = get_bybit_data(symbol, interval, start_ts=current_start_ts)
         if not chunk: break
-        all_candles_raw.extend(chunk); last_ts = int(chunk[-1][0])
+        all_candles_raw.extend(chunk)
+        last_ts = int(chunk[-1][0])
         if len(chunk) < 1000 or last_ts >= end_ts: break
         current_start_ts = last_ts + 1
+    
     if len(all_candles_raw) < 50: raise ValueError("Not enough historical data.")
     
-    with settings_lock:
-        risk_percentage = SETTINGS.get('risk_percentage', 1.0)
-        leverage = SETTINGS['leverage']
-        trigger_percentage = SETTINGS.get('trigger_percentage', 4.0)
-
-    equity, equity_curve, trades, open_position = 10000.0, [{'time': start_ts, 'equity': 10000.0}], [], None
-    for i in range(50, len(all_candles_raw)):
-        candle = {'t': int(all_candles_raw[i][0]), 'c': float(all_candles_raw[i][4]), 'h': float(all_candles_raw[i][2]), 'l': float(all_candles_raw[i][3])}
-        if open_position:
-            exit_price, exit_reason = None, None
-            if open_position['direction'] == 'long':
-                if candle['l'] <= open_position['sl']: exit_price, exit_reason = open_position['sl'], 'SL'
-                elif candle['h'] >= open_position['tp']: exit_price, exit_reason = open_position['tp'], 'TP'
-            else:
-                if candle['h'] >= open_position['sl']: exit_price, exit_reason = open_position['sl'], 'SL'
-                elif candle['l'] <= open_position['tp']: exit_price, exit_reason = open_position['tp'], 'TP'
-            if not exit_price:
+    trades, equity_curve, final_equity = [], [{'time': start_ts, 'equity': starting_equity}], starting_equity
+    
+    # --- FUTURES MODE ---
+    if mode == 'futures':
+        equity = starting_equity
+        open_position = None
+        for i in range(50, len(all_candles_raw)):
+            candle = {'t': int(all_candles_raw[i][0]), 'c': float(all_candles_raw[i][4]), 'h': float(all_candles_raw[i][2]), 'l': float(all_candles_raw[i][3])}
+            if open_position:
+                exit_price, exit_reason = None, None
+                if open_position['direction'] == 'long':
+                    if candle['l'] <= open_position['sl']: exit_price, exit_reason = open_position['sl'], 'SL'
+                    elif candle['h'] >= open_position['tp']: exit_price, exit_reason = open_position['tp'], 'TP'
+                else:
+                    if candle['h'] >= open_position['sl']: exit_price, exit_reason = open_position['sl'], 'SL'
+                    elif candle['l'] <= open_position['tp']: exit_price, exit_reason = open_position['tp'], 'TP'
+                
+                if not exit_price:
+                    predicted = predict_next_candles(all_candles_raw[i-50:i], 20)
+                    if predicted:
+                        last_price = float(all_candles_raw[i-1][4]); change_pct = ((predicted[-1]['c'] - last_price) / last_price) * 100
+                        if (open_position['direction']=='long' and change_pct<-0.5) or (open_position['direction']=='short' and change_pct>0.5): exit_price, exit_reason = candle['c'], 'Reversal'
+                
+                if exit_price:
+                    pnl = (exit_price - open_position['entry_price']) * open_position['quantity'] if open_position['direction'] == 'long' else (open_position['entry_price'] - exit_price) * open_position['quantity']
+                    equity += pnl; trades.append({'exit_time': candle['t'], 'direction': open_position['direction'], 'pnl': pnl, 'return_pct': (pnl / ((open_position['entry_price'] * open_position['quantity']) / leverage)) * 100, 'exit_reason': exit_reason}); open_position = None
+            
+            if not open_position:
                 predicted = predict_next_candles(all_candles_raw[i-50:i], 20)
                 if predicted:
-                    last_price = float(all_candles_raw[i-1][4]); change_pct = ((predicted[-1]['c'] - last_price) / last_price) * 100
-                    if (open_position['direction']=='long' and change_pct<-0.5) or (open_position['direction']=='short' and change_pct>0.5): exit_price, exit_reason = candle['c'], 'Reversal'
-            if exit_price:
-                pnl = (exit_price - open_position['entry_price']) * open_position['quantity'] if open_position['direction'] == 'long' else (open_position['entry_price'] - exit_price) * open_position['quantity']
-                equity += pnl; trades.append({'exit_time': candle['t'], 'direction': open_position['direction'], 'pnl': pnl, 'return_pct': (pnl / ((open_position['entry_price'] * open_position['quantity']) / leverage)) * 100, 'exit_reason': exit_reason}); open_position = None
-        if not open_position:
+                    price = float(all_candles_raw[i-1][4]); change = ((predicted[-1]['c'] - price) / price) * 100
+                    if abs(change) > trigger_percentage:
+                        direction = "long" if change > 0 else "short"
+                        tp = price * (1 + (change*0.8/100)); sl = price * (1-(change*0.4/100)) if direction == "long" else price * (1+(abs(change)*0.4/100))
+                        
+                        liquidation_price = calculate_liquidation_price(price, leverage, direction)
+                        if liquidation_price is not None:
+                            if direction == "long" and sl <= liquidation_price: sl = liquidation_price * 1.001
+                            elif direction == "short" and sl >= liquidation_price: sl = liquidation_price * 0.999
+
+                        if abs(price-sl) > 0 and equity > 0:
+                            risk_amount = equity * (risk_percentage / 100)
+                            quantity = risk_amount / abs(price - sl)
+                            open_position = {'entry_price': price, 'quantity': quantity, 'direction': direction, 'tp': tp, 'sl': sl}
+            equity_curve.append({'time': candle['t'], 'equity': equity})
+        final_equity = equity
+
+    # --- SPOT MODE ---
+    elif mode == 'spot':
+        cash = starting_equity
+        holdings = []
+        for i in range(50, len(all_candles_raw)):
+            candle = {'t': int(all_candles_raw[i][0]), 'c': float(all_candles_raw[i][4]), 'h': float(all_candles_raw[i][2]), 'l': float(all_candles_raw[i][3])}
+            
+            for holding in holdings[:]:
+                if candle['h'] >= holding['tp']:
+                    exit_price = holding['tp']
+                    pnl = (exit_price - holding['entry_price']) * holding['quantity']
+                    return_pct = (pnl / (holding['entry_price'] * holding['quantity'])) * 100
+                    cash += exit_price * holding['quantity']
+                    trades.append({'exit_time': candle['t'], 'direction': 'long', 'pnl': pnl, 'return_pct': return_pct, 'exit_reason': 'TP'})
+                    holdings.remove(holding)
+            
             predicted = predict_next_candles(all_candles_raw[i-50:i], 20)
             if predicted:
-                price = float(all_candles_raw[i-1][4]); change = ((predicted[-1]['c'] - price) / price) * 100
-                if abs(change) > trigger_percentage:
-                    direction = "long" if change > 0 else "short"
-                    tp = price * (1 + (change*0.8/100)); sl = price * (1-(change*0.4/100)) if direction == "long" else price * (1+(abs(change)*0.4/100))
-                    
-                    # --- LIQUIDATION GUARD FOR BACKTEST ---
-                    liquidation_price = calculate_liquidation_price(price, leverage, direction)
-                    if liquidation_price is not None:
-                        if direction == "long" and sl <= liquidation_price:
-                            sl = liquidation_price * 1.001
-                        elif direction == "short" and sl >= liquidation_price:
-                            sl = liquidation_price * 0.999
+                price = float(all_candles_raw[i-1][4])
+                change = ((predicted[-1]['c'] - price) / price) * 100
+                if change > trigger_percentage: # Only long signals
+                    entry_price = price
+                    tp = entry_price * (1 + (change * 0.8 / 100))
+                    if cash > 10:
+                        investment_amount = cash * (risk_percentage / 100)
+                        quantity = investment_amount / entry_price
+                        cash -= investment_amount
+                        holdings.append({'entry_price': entry_price, 'quantity': quantity, 'tp': tp})
 
-                    if not (any(p['l'] < sl for p in predicted) if direction == "long" else any(p['h'] > sl for p in predicted)) and abs(price-sl)>0:
-                        risk_amount = equity * (risk_percentage / 100)
-                        quantity = risk_amount / abs(price - sl)
-                        open_position = {'entry_price': price, 'quantity': quantity, 'direction': direction, 'tp': tp, 'sl': sl}
-        equity_curve.append({'time': candle['t'], 'equity': equity})
-    net_profit = equity - 10000; total_trades = len(trades); win_rate = (len([t for t in trades if t['pnl'] > 0]) / total_trades * 100) if total_trades > 0 else 0; total_profit = sum(t['pnl'] for t in trades if t['pnl']>0); total_loss = abs(sum(t['pnl'] for t in trades if t['pnl']<=0)); profit_factor = total_profit / total_loss if total_loss > 0 else float('inf'); max_dd, peak = 0, -1
+            current_holdings_value = sum(h['quantity'] * candle['c'] for h in holdings)
+            equity_curve.append({'time': candle['t'], 'equity': cash + current_holdings_value})
+        
+        final_price = float(all_candles_raw[-1][4])
+        final_holdings_value = sum(h['quantity'] * final_price for h in holdings)
+        final_equity = cash + final_holdings_value
+
+    # --- METRICS CALCULATION ---
+    net_profit = final_equity - starting_equity; total_trades = len(trades); win_rate = (len([t for t in trades if t['pnl'] > 0]) / total_trades * 100) if total_trades > 0 else 0; total_profit = sum(t['pnl'] for t in trades if t['pnl']>0); total_loss = abs(sum(t['pnl'] for t in trades if t['pnl']<=0)); profit_factor = total_profit / total_loss if total_loss > 0 else 0; max_dd, peak = 0, starting_equity
     for item in equity_curve:
         if item['equity'] > peak: peak = item['equity']
         dd = (peak - item['equity']) / peak if peak != 0 else 0; max_dd = max(max_dd, dd)
     return {"metrics": {"net_profit": net_profit, "total_trades": total_trades, "win_rate": win_rate, "profit_factor": profit_factor, "max_drawdown": max_dd * 100, "avg_trade_pnl": (net_profit / total_trades) if total_trades > 0 else 0}, "trades": trades, "equity_curve": equity_curve}
 
-# --- Flask Routes (MODIFIED)---
+# --- Flask Routes ---
 @app.route('/')
 def index(): return render_template_string(HTML_TEMPLATE)
 @app.route('/api/candles')
@@ -577,14 +634,12 @@ def manual_trade():
         if not price_data or symbol not in price_data: return jsonify({"error": "Could not fetch current price"}), 400
         current_price = price_data[symbol]
         
-        # Assume a 2% stop loss from current price for manual trades to calculate quantity
         stop_loss_price = current_price * 0.98 if side == 'long' else current_price * 1.02
         price_diff_per_unit = abs(current_price - stop_loss_price)
         if price_diff_per_unit == 0: return jsonify({"error": "Price difference is zero, cannot calculate quantity"}), 400
         quantity = risk_usdt / price_diff_per_unit
 
         position_side, order_side = "LONG" if side == 'long' else "SHORT", "BUY" if side == 'long' else "SELL"
-        app.logger.info(f"[MANUAL] Placing {side} order for {symbol}. Qty: {quantity:.4f}")
         res = client.place_order(symbol, order_side, position_side, quantity, lev)
         if res and res.get('code') == 0:
             with positions_lock, status_lock:
@@ -603,7 +658,6 @@ def manual_close():
             pos = ACTIVE_POSITIONS[item_id]
         with settings_lock: client = BingXClient(SETTINGS['bingx_api_key'], SETTINGS['secret_key'], SETTINGS['mode'] == 'demo'); lev = SETTINGS['leverage']
         position_side, order_side = pos['direction'].upper(), "SELL" if pos['direction'] == 'long' else "BUY"
-        app.logger.info(f"[MANUAL-CLOSE] Closing {pos['direction']} for {symbol}. Qty: {pos['quantity']:.4f}")
         res = client.place_order(symbol, order_side, position_side, pos['quantity'], lev)
         if res and res.get('code') == 0:
             with positions_lock, status_lock:
@@ -617,9 +671,27 @@ def manual_close():
 def handle_backtest():
     data = request.json
     try:
-        start_ts = int(datetime.strptime(data['start_date'], '%Y-%m-%d').timestamp() * 1000); end_ts = int(datetime.strptime(data['end_date'], '%Y-%m-%d').timestamp() * 1000)
-        results = run_backtest_simulation(data['symbol'], data['interval'], start_ts, end_ts); return jsonify(results)
-    except Exception as e: app.logger.error(f"Backtest error: {e}", exc_info=True); return jsonify({"error": str(e)}), 400
+        start_ts = int(datetime.strptime(data['start_date'], '%Y-%m-%d').timestamp() * 1000)
+        end_ts = int(datetime.strptime(data['end_date'], '%Y-%m-%d').timestamp() * 1000)
+        
+        # Pull all params from request
+        mode = data.get('mode', 'futures')
+        starting_equity = data.get('equity', 10000.0)
+        leverage = data.get('leverage', 10)
+        risk_percentage = data.get('risk_percentage', 1.0)
+        trigger_percentage = data.get('trigger_percentage') # Get live setting if not passed
+        if trigger_percentage is None:
+             with settings_lock:
+                 trigger_percentage = SETTINGS.get('trigger_percentage', 4.0)
+
+        results = run_backtest_simulation(
+            data['symbol'], data['interval'], start_ts, end_ts,
+            mode, starting_equity, risk_percentage, leverage, trigger_percentage
+        )
+        return jsonify(results)
+    except Exception as e: 
+        app.logger.error(f"Backtest error: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 400
 
 # --- Main Execution ---
 if __name__ == '__main__':
