@@ -1,5 +1,5 @@
 # ==============================================================================
-# Exora Quant AI - v3.8.2 with True Spot Wallet & Order Integration
+# Exora Quant AI - v3.8.3 with True Spot Wallet & Restored Logging
 # ==============================================================================
 # This version is MODIFIED to fetch all price and candle data from the
 # Bybit PERPETUAL (linear) market instead of the SPOT market. This aligns
@@ -10,6 +10,7 @@
 # THIS VERSION ADDS a liquidation detection feature to adjust SL and prevent liquidation.
 # THIS VERSION ADDS a switchable Spot Trading mode for both live bots and backtesting.
 # THIS VERSION FIXES the trading bot to use the correct BingX SPOT WALLET and SPOT ORDER endpoints when in Spot mode.
+# THIS VERSION RESTORES the detailed console logging for analysis cycles, balance, and trade execution.
 # ==============================================================================
 
 import time
@@ -95,7 +96,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Exora Quant AI v3.8.2 (True Spot Integration)</title>
+    <title>Exora Quant AI v3.8.3 (True Spot Integration)</title>
     <style>
         html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #000; color: #eee; font-size: 14px; }
         #chartdiv { width: 100%; height: calc(100% - 250px); }
@@ -174,7 +175,7 @@ document.addEventListener('DOMContentLoaded', function () {
     let backtestRunning = false;
     async function runBacktest() { if (backtestRunning) return; backtestRunning = true; const statusEl = document.getElementById('backtest-status'); const resultsEl = document.getElementById('backtest-results'); statusEl.textContent = 'Fetching historical data...'; resultsEl.style.display = 'none'; const payload = { symbol: document.getElementById('backtest-symbol').value.toUpperCase(), interval: document.getElementById('backtest-interval').value, mode: document.getElementById('backtest-mode').value, start_date: document.getElementById('backtest-start').value, end_date: document.getElementById('backtest-end').value, }; try { statusEl.textContent = 'Running simulation...'; const response = await fetch('/api/backtest', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }); if (!response.ok) throw new Error((await response.json()).error); const results = await response.json(); displayBacktestResults(results); statusEl.textContent = 'Backtest complete.'; } catch (error) { statusEl.textContent = `Error: ${error.message}`; } finally { backtestRunning = false; } }
     function displayBacktestResults(results) { document.getElementById('backtest-results').style.display = 'block'; const stats = results.metrics; const statsEl = document.getElementById('backtest-stats'); statsEl.innerHTML = `<div>Net Profit: <span style="color:${stats.net_profit > 0 ? '#28a745' : '#dc3545'}">${stats.net_profit.toFixed(2)} USDT</span></div><div>Win Rate: <span>${stats.win_rate.toFixed(2)}%</span></div><div>Profit Factor: <span>${stats.profit_factor.toFixed(2)}</span></div><div>Total Trades: <span>${stats.total_trades}</span></div><div>Avg Trade PnL: <span>${stats.avg_trade_pnl.toFixed(2)}</span></div><div>Max Drawdown: <span style="color:#dc3545">${stats.max_drawdown.toFixed(2)}%</span></div>`; const tradesTableBody = document.querySelector('#backtest-trades-table tbody'); tradesTableBody.innerHTML = ''; results.trades.forEach(trade => { const pnlColor = trade.pnl > 0 ? '#28a745' : '#dc3545'; const row = `<tr><td>${new Date(trade.exit_time).toLocaleString()}</td><td>${trade.direction}</td><td style="color:${pnlColor}">${trade.pnl.toFixed(2)}</td><td style="color:${pnlColor}">${trade.return_pct.toFixed(2)}%</td><td>${trade.exit_reason || 'N/A'}</td></tr>`; tradesTableBody.insertAdjacentHTML('afterbegin', row); }); createEquityChart(results.equity_curve); }
-    function createEquityChart(data) { if (equityRoot) equityRoot.dispose(); equityRoot = am5.Root.new("equitychartdiv"); equityRoot.setThemes([am5themes_Dark.new(equityRoot)]); let chart = equityRoot.container.children.push(am5xy.XYChart.new(equityRoot, { panX: true, wheelX: "zoomX", pinchZoomX: true, paddingLeft: 0, paddingRight: 0 })); let xAxis = chart.xAxes.push(am5xy.DateAxis.new(equityRoot, { baseInterval: { timeUnit: "day", count: 1 }, renderer: am5xy.AxisRendererX.new(equityRoot, { minGridDistance: 50 }), })); let yAxis = chart.yAxes.push(am5xy.ValueAxis.new(equityRoot, { renderer: am5xy.AxisRendererY.new(equityRoot, {}) })); let series = chart.series.push(am5xy.LineSeries.new(root, { name: "Equity", xAxis: xAxis, yAxis: yAxis, valueYField: "equity", valueXField: "time", stroke: am5.color(0x00aaff), fill: am5.color(0x00aaff), })); series.fills.template.setAll({ fillOpacity: 0.1, visible: true }); series.data.setAll(data); }
+    function createEquityChart(data) { if (equityRoot) equityRoot.dispose(); equityRoot = am5.Root.new("equitychartdiv"); equityRoot.setThemes([am5themes_Dark.new(equityRoot)]); let chart = equityRoot.container.children.push(am5xy.XYChart.new(equityRoot, { panX: true, wheelX: "zoomX", pinchZoomX: true, paddingLeft: 0, paddingRight: 0 })); let xAxis = chart.xAxes.push(am5xy.DateAxis.new(root, { baseInterval: { timeUnit: "day", count: 1 }, renderer: am5xy.AxisRendererX.new(root, { minGridDistance: 50 }), })); let yAxis = chart.yAxes.push(am5xy.ValueAxis.new(equityRoot, { renderer: am5xy.AxisRendererY.new(equityRoot, {}) })); let series = chart.series.push(am5xy.LineSeries.new(root, { name: "Equity", xAxis: xAxis, yAxis: yAxis, valueYField: "equity", valueXField: "time", stroke: am5.color(0x00aaff), fill: am5.color(0x00aaff), })); series.fills.template.setAll({ fillOpacity: 0.1, visible: true }); series.data.setAll(data); }
     function toggleLeverageInput() { const mode = document.getElementById('trading-mode').value; const leverageInput = document.getElementById('leverage'); const riskLabel = document.getElementById('risk-label'); if (mode === 'spot') { leverageInput.disabled = true; riskLabel.textContent = 'Investment (%):'; } else { leverageInput.disabled = false; riskLabel.textContent = 'Risk (%):'; } refreshBalance(); }
     function initialize() { loadSettings(); refreshTradeList(); refreshBalance(); setInterval(refreshTradeList, 1000); setInterval(refreshBalance, 30000); const today = new Date(); const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1); const threeMonthsAgo = new Date(today); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3); document.getElementById('backtest-end').valueAsDate = yesterday; document.getElementById('backtest-start').valueAsDate = threeMonthsAgo; document.getElementById('toggle-controls-btn').addEventListener('click', () => document.querySelector('.controls-overlay').classList.toggle('hidden')); document.getElementById('fetchButton').addEventListener('click', fetchChartData); document.getElementById('add-to-list-btn').addEventListener('click', addTradeItem); document.getElementById('save-settings-btn').addEventListener('click', saveSettings); document.getElementById('run-backtest-btn').addEventListener('click', runBacktest); document.getElementById('trading-mode').addEventListener('change', toggleLeverageInput); document.getElementById('toggle-backtest-size-btn').addEventListener('click', (e) => { const btn = e.target; const container = document.querySelector('.panels-container'); const chartContainer = document.getElementById('chartdiv'); container.classList.toggle('is-maximized'); if (container.classList.contains('is-maximized')) { btn.textContent = '−'; btn.title = "Minimize"; chartContainer.style.height = '40px'; } else { btn.textContent = '□'; btn.title = "Maximize"; chartContainer.style.height = 'calc(100% - 250px)'; } setTimeout(() => { if (equityRoot) { equityRoot.resize(); } if (root) { root.resize(); } }, 350); }); }
     initialize();
@@ -304,7 +305,7 @@ class BingXClient:
         else: raise ValueError("Either quantity or quote_order_qty must be provided for a spot order.")
         return self._request('POST', "/openApi/spot/v1/trade/order", params)
 
-# --- trade_bot_worker (MODIFIED TO USE CORRECT API METHODS) ---
+# --- trade_bot_worker (MODIFIED WITH RESTORED LOGGING) ---
 def trade_bot_worker():
     app.logger.info("Trading bot worker thread started.")
     ticker_check_interval = 5; analysis_interval = 60; last_analysis_time = 0
@@ -332,7 +333,7 @@ def trade_bot_worker():
                         direction, tp, sl = position['direction'], position.get('tp_price'), position.get('sl_price')
                         close_position, close_reason = False, ""
                         if direction == 'long' and tp and current_price >= tp: close_position, close_reason = True, "TP"
-                        elif pos_mode == 'futures': # SL only for futures
+                        elif pos_mode == 'futures':
                            if direction == 'long' and sl and current_price <= sl: close_position, close_reason = True, "SL"
                            elif direction == 'short' and tp and current_price <= tp: close_position, close_reason = True, "TP"
                            elif direction == 'short' and sl and current_price >= sl: close_position, close_reason = True, "SL"
@@ -352,6 +353,8 @@ def trade_bot_worker():
             if time.time() - last_analysis_time < analysis_interval: time.sleep(ticker_check_interval); continue
             
             last_analysis_time = time.time()
+            app.logger.info(f"Starting new signal analysis cycle in {trading_mode.upper()} mode...")
+            
             total_balance = 0
             if trading_mode == 'spot':
                 balance_response = client.get_spot_balance()
@@ -362,7 +365,14 @@ def trade_bot_worker():
                 balance_response = client.get_futures_balance()
                 if balance_response and balance_response.get('code') == 0: total_balance = float(balance_response['data']['balance']['balance'])
             
-            if total_balance == 0: app.logger.error("Could not fetch account balance or balance is zero. Skipping trade cycle."); time.sleep(10); continue
+            if total_balance > 0:
+                risk_or_investment_usdt = total_balance * (risk_percentage / 100)
+                log_label = "Risk Amount" if trading_mode == 'futures' else "Investment Amount"
+                app.logger.info(f"Current {trading_mode.capitalize()} Balance: {total_balance:.2f} USDT, {log_label} for new trades: {risk_or_investment_usdt:.2f} USDT")
+            else:
+                app.logger.error("Could not fetch account balance or balance is zero. Skipping trade cycle.")
+                time.sleep(10)
+                continue
 
             for item in trade_list_copy:
                 try:
@@ -371,7 +381,7 @@ def trade_bot_worker():
                     with status_lock: last_close_time = BOT_STATUS.get(item_id, {}).get('last_close_time', 0)
                     if position_data or (time.time() - last_close_time < TRADE_COOLDOWN_SECONDS): continue
 
-                    raw_candles = get_bybit_data(symbol, interval, limit=50)
+                    raw_candles = get_bybit_data(symbol, interval, limit=50);
                     if len(raw_candles) < 50: continue
                     current_price = float(raw_candles[-1][4])
 
@@ -390,6 +400,7 @@ def trade_bot_worker():
                         if abs(current_price - sl_price) > 0:
                             risk_usdt = total_balance * (risk_percentage / 100)
                             quantity = risk_usdt / abs(current_price - sl_price)
+                            app.logger.info(f"[FUTURES TRADE] Entry signal for {symbol}. Placing {direction} order. Qty: {quantity:.5f}, SL: {sl_price:.4f}")
                             res = client.place_futures_order(symbol, "BUY" if direction == 'long' else "SELL", direction.upper(), quantity, base_leverage)
                             if res and res.get('code') == 0:
                                 with positions_lock: ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'quantity': quantity, 'direction': direction, 'entry_price': current_price, 'tp_price': tp_price, 'sl_price': sl_price, 'mode': 'futures'}
@@ -397,8 +408,8 @@ def trade_bot_worker():
                     elif trading_mode == 'spot' and price_change_pct > trigger_percentage:
                         tp_price = current_price * (1 + (price_change_pct * 0.8 / 100))
                         investment_usdt = total_balance * (risk_percentage / 100)
-                        # Estimate quantity for internal tracking; actual order is by quote quantity
                         quantity_estimate = investment_usdt / current_price
+                        app.logger.info(f"[SPOT TRADE] Entry signal for {symbol}. Placing BUY order for {investment_usdt:.2f} USDT.")
                         res = client.place_spot_order(symbol, "BUY", quote_order_qty=investment_usdt)
                         if res and res.get('code') == 0:
                             with positions_lock: ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'quantity': quantity_estimate, 'direction': 'long', 'entry_price': current_price, 'tp_price': tp_price, 'sl_price': None, 'mode': 'spot'}
@@ -605,7 +616,7 @@ def manual_trade():
                     res = client.place_futures_order(symbol, "BUY" if side == 'long' else "SELL", side.upper(), quantity, lev)
 
         if res and res.get('code') == 0:
-            with positions_lock: ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'direction': side, 'mode': trading_mode, 'entry_price': get_bybit_ticker_data([symbol]).get(symbol) or 0, 'quantity': 0} # Placeholder, logic relies on exchange
+            with positions_lock: ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'direction': side, 'mode': trading_mode, 'entry_price': get_bybit_ticker_data([symbol]).get(symbol) or 0, 'quantity': 0}
             return jsonify({"message": f"Manual {side} ({trading_mode}) order placed."})
         return jsonify({"error": f"Failed: {res.get('msg') if res else 'Could not fetch balance or place order'}"}), 400
     except Exception as e: app.logger.error(f"Manual trade error: {e}", exc_info=True); return jsonify({"error": str(e)}), 500
@@ -621,12 +632,9 @@ def manual_close():
         
         res = None
         if pos.get('mode') == 'spot':
-            # For spot, we need to know the quantity held to sell it. This is a limitation of not tracking it perfectly.
-            # We will place a sell order assuming the bot knows the quantity from its internal state. This is a simplified approach.
             if pos.get('quantity', 0) > 0:
                 res = client.place_spot_order(symbol, "SELL", quantity=pos['quantity'])
-            else:
-                 return jsonify({"error": "Cannot close spot position: quantity unknown. Please close manually on the exchange."}), 400
+            else: return jsonify({"error": "Cannot close spot position: quantity unknown. Please close manually on the exchange."}), 400
         else: # futures
             res = client.place_futures_order(symbol, "SELL" if pos['direction'] == 'long' else "BUY", pos['direction'].upper(), pos['quantity'], base_lev)
 
