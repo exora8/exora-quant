@@ -1,13 +1,13 @@
 # ==============================================================================
-# Exora Quant AI - Spot Trading Edition (v1.1 with Enhanced Logging)
+# Exora Quant AI - Spot Trading Edition (v1.2 with Reversal Logic)
 # ==============================================================================
 # This version has been re-created to trade on the SPOT market.
 # - All futures-related logic (leverage, liquidation, shorting) is removed.
 # - API calls are updated for Bybit spot data and BingX spot trading endpoints.
 # - The trading model is simplified to BUYING with USDT and SELLING assets held.
 # - The user interface and backtester are updated to reflect spot mechanics.
-# THIS VERSION adds a detailed explanation of the analysis results per new
-# signal analysis cycle to the live terminal log.
+# - THIS VERSION adds a "Reversal Exit". If the bot is holding an asset and the
+#   signal turns negative, the bot will exit the trade immediately.
 # ==============================================================================
 
 import time
@@ -257,7 +257,7 @@ class BingXClient:
             
         return self._request('POST', "/openApi/spot/v1/trade/order", params)
 
-# --- Bot Worker (MODIFIED with Enhanced Logging) ---
+# --- Bot Worker (CORRECTED with Reversal Logic) ---
 def trade_bot_worker():
     app.logger.info("Spot trading bot worker thread started.")
     analysis_interval = 60
@@ -317,7 +317,6 @@ def trade_bot_worker():
                     final_predicted_price = predicted_candles[-1]['c']
                     price_change_pct = ((final_predicted_price - current_price) / current_price) * 100
 
-                    # --- NEW: Detailed Logging Block ---
                     log_message_header = f"\n----------------- Analysis for {symbol} ({item['interval_text']}) -----------------"
                     log_message_body = (
                         f"  > Current Price:          {current_price:.4f}\n"
@@ -327,15 +326,19 @@ def trade_bot_worker():
                         f"  > Current Status:         {'Holding Asset' if holding_data else 'Watching'}"
                     )
                     decision_message = ""
-                    # --- End of New Block ---
 
                     # --- Logic for SELLING a held asset ---
                     if holding_data:
                         sl_price, tp_price = holding_data.get('sl_price'), holding_data.get('tp_price')
                         close_trade, reason = False, ""
-                        if sl_price and current_price <= sl_price: close_trade, reason = True, "Stop-Loss Hit"
-                        elif tp_price and current_price >= tp_price: close_trade, reason = True, "Take-Profit Hit"
-                        elif price_change_pct < -0.5: close_trade, reason = True, "Reversal Signal"
+                        
+                        if sl_price and current_price <= sl_price: 
+                            close_trade, reason = True, "Stop-Loss Hit"
+                        elif tp_price and current_price >= tp_price: 
+                            close_trade, reason = True, "Take-Profit Hit"
+                        # --- THIS IS THE CORRECTED REVERSAL LOGIC ---
+                        elif price_change_pct < -0.5: 
+                            close_trade, reason = True, "Reversal Signal"
                         
                         if close_trade:
                             decision_message = f"  > Decision:               SELL ({reason})"
@@ -380,7 +383,7 @@ def trade_bot_worker():
 
                 except Exception as e:
                     app.logger.error(f"Error in analysis for {item.get('symbol', 'N/A')}: {e}", exc_info=False)
-                time.sleep(1) # Stagger API calls slightly
+                time.sleep(1)
 
         except Exception as e:
             app.logger.error(f"FATAL ERROR in main trade_bot_worker loop: {e}", exc_info=True)
