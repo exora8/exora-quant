@@ -1,6 +1,9 @@
 # ==============================================================================
 # Exora Quant AI - v3.8 MODIFIED with Supply/Demand Logic & High-Res Backtest
 # ==============================================================================
+# THIS VERSION UPGRADES the live trading bot to use the same TP1, TP2, TP3
+# partial profit-taking system as the backtester for perfect logic synchronization.
+# ==============================================================================
 # This version INTEGRATES the advanced Supply and Demand trading logic.
 # The backtester has been UPGRADED to a high-resolution engine for accuracy.
 # It analyzes the last 500 candles to identify zones and trades on them.
@@ -289,33 +292,28 @@ class BingXClient:
     
     def set_leverage(self, symbol, side, leverage): return self._request('POST', "/openApi/swap/v2/trade/leverage", {"symbol": symbol, "side": side, "leverage": leverage})
 
-# --- REWRITTEN trade_bot_worker WITH S/D LOGIC ---
+# --- REWRITTEN trade_bot_worker WITH S/D LOGIC & TP1/2/3 ---
 def trade_bot_worker():
     app.logger.info("Trading bot worker thread started.")
     analysis_interval = 60
     last_analysis_time = 0
 
     while True:
-        time.sleep(2) # Slow down loop slightly
+        time.sleep(2)
         try:
             with trade_list_lock: trade_list_copy = list(TRADE_LIST)
             if not trade_list_copy:
                 time.sleep(5)
                 continue
 
+            if time.time() - last_analysis_time < analysis_interval:
+                continue
+
             with settings_lock:
                 client = BingXClient(SETTINGS['bingx_api_key'], SETTINGS['bingx_secret_key'], SETTINGS['mode'] == 'demo')
                 risk_percentage = SETTINGS.get('risk_percentage', 1.0)
                 leverage = SETTINGS['leverage']
-            
-            with positions_lock: active_positions_copy = dict(ACTIVE_POSITIONS)
-            
-            # High-frequency TP/SL monitoring is handled by pnl_updater_worker now
-            
-            # Perform main analysis only once per minute
-            if time.time() - last_analysis_time < analysis_interval:
-                continue
-            
+
             last_analysis_time = time.time()
             balance_response = client.get_balance()
             total_balance = 0
@@ -335,53 +333,53 @@ def trade_bot_worker():
                     raw_candles = get_bybit_data(symbol, interval, limit=500)
                     if len(raw_candles) < 50: continue
                     current_price = float(raw_candles[-1][4])
-
                     zones = find_supply_demand_zones(raw_candles)
-                    supply_zone = zones['supply']
-                    demand_zone = zones['demand']
                     
                     if position_data:
                         direction = position_data['direction']
                         is_long = direction == 'long'
-                        signal_reversed = (is_long and supply_zone and current_price >= supply_zone['low']) or \
-                                          (not is_long and demand_zone and current_price <= demand_zone['high'])
+                        signal_reversed = (is_long and zones['supply'] and current_price >= zones['supply']['low']) or \
+                                          (not is_long and zones['demand'] and current_price <= zones['demand']['high'])
                         if signal_reversed:
-                            app.logger.info(f"[REVERSAL] Contrary zone detected for {symbol}. Closing {direction} position.")
+                            app.logger.info(f"[REVERSAL] Contrary zone detected for {symbol}. Closing remaining position.")
                             position_side, order_side = direction.upper(), "SELL" if is_long else "BUY"
-                            res = client.place_order(symbol, order_side, position_side, position_data['quantity'], leverage)
+                            res = client.place_order(symbol, order_side, position_side, position_data['quantity'], leverage) # Close remaining qty
                             if res and res.get('code') == 0:
                                 with positions_lock, status_lock:
                                     if item_id in ACTIVE_POSITIONS: del ACTIVE_POSITIONS[item_id]
                                     BOT_STATUS[item_id] = {"message": "Waiting...", "color": "#fff", "last_close_time": time.time()}
 
                     elif time.time() - last_close_time > TRADE_COOLDOWN_SECONDS:
-                        direction, entry_price, sl_price, tp_price = None, None, None, None
-                        
-                        if demand_zone and current_price <= demand_zone['high'] and current_price >= demand_zone['low']:
-                            direction = 'long'
-                            entry_price = current_price
-                            sl_price = demand_zone['low'] * 0.999
-                            tp_price = entry_price + (abs(entry_price - sl_price) * 2.5)
-
-                        elif supply_zone and current_price <= supply_zone['high'] and current_price >= supply_zone['low']:
-                            direction = 'short'
-                            entry_price = current_price
-                            sl_price = supply_zone['high'] * 1.001
-                            tp_price = entry_price - (abs(entry_price - sl_price) * 2.5)
+                        entry_price, direction, zone = current_price, None, None
+                        if zones['demand'] and entry_price <= zones['demand']['high'] and entry_price >= zones['demand']['low']: direction, zone = 'long', zones['demand']
+                        elif zones['supply'] and entry_price <= zones['supply']['high'] and entry_price >= zones['supply']['low']: direction, zone = 'short', zones['supply']
                             
-                        if direction and abs(entry_price - sl_price) > 0:
+                        if direction and zone:
+                            sl_price = zone['low'] * 0.999 if direction == 'long' else zone['high'] * 1.001
                             liquidation_price = calculate_liquidation_price(entry_price, leverage, direction)
                             if liquidation_price is not None:
                                 if direction == "long" and sl_price <= liquidation_price: sl_price = liquidation_price * 1.001
                                 elif direction == "short" and sl_price >= liquidation_price: sl_price = liquidation_price * 0.999
-
-                            quantity = risk_usdt / abs(entry_price - sl_price)
-                            position_side, order_side = direction.upper(), "BUY" if direction == 'long' else "SELL"
-                            res = client.place_order(symbol, order_side, position_side, quantity, leverage)
-                            if res and res.get('code') == 0:
-                                with positions_lock:
-                                    ACTIVE_POSITIONS[item_id] = {'symbol': symbol, 'quantity': quantity, 'direction': direction, 'entry_price': entry_price, 'tp_price': tp_price, 'sl_price': sl_price}
-                                    app.logger.info(f"Opened {direction} position for {symbol} based on S/D zone.")
+                            
+                            risk_per_unit = abs(entry_price - sl_price)
+                            if risk_per_unit > 0:
+                                total_quantity = risk_usdt / risk_per_unit
+                                tp1, tp2, tp3 = entry_price + risk_per_unit, entry_price + risk_per_unit * 2, entry_price + risk_per_unit * 3
+                                if direction == 'short': tp1, tp2, tp3 = entry_price - risk_per_unit, entry_price - risk_per_unit * 2, entry_price - risk_per_unit * 3
+                                
+                                position_side, order_side = direction.upper(), "BUY" if direction == 'long' else "SELL"
+                                res = client.place_order(symbol, order_side, position_side, total_quantity, leverage)
+                                if res and res.get('code') == 0:
+                                    with positions_lock:
+                                        ACTIVE_POSITIONS[item_id] = {
+                                            'symbol': symbol, 'quantity': total_quantity, 'direction': direction, 
+                                            'entry_price': entry_price, 'sl_price': sl_price,
+                                            'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
+                                            'tp1_qty': total_quantity * 0.33, 'tp2_qty': total_quantity * 0.33,
+                                            'tp3_qty': total_quantity - (total_quantity * 0.33 * 2),
+                                            'initial_margin': (entry_price * total_quantity) / leverage if leverage > 0 else 1
+                                        }
+                                        app.logger.info(f"Opened {direction} position for {symbol} with TP1/2/3.")
                 except Exception as e:
                     app.logger.error(f"Error in analysis for {item.get('symbol', 'N/A')}: {e}", exc_info=False)
                 time.sleep(1)
@@ -413,40 +411,54 @@ def pnl_updater_worker():
                     current_price = ticker_prices[symbol]
                     entry_price, quantity, direction = position['entry_price'], position['quantity'], position['direction']
                     
-                    # --- PnL Calculation ---
                     pnl = (current_price - entry_price) * quantity if direction == 'long' else (entry_price - current_price) * quantity
-                    initial_margin = (entry_price * quantity) / leverage
+                    initial_margin = position.get('initial_margin', 1)
                     pnl_pct = (pnl / initial_margin) * 100 if initial_margin > 0 else 0
                     with status_lock:
                         BOT_STATUS[item_id] = { "message": f"In {direction.upper()}", "color": "#28a745" if pnl >= 0 else "#dc3545", "pnl": pnl, "pnl_pct": pnl_pct }
                     
-                    # --- TP/SL Execution ---
-                    tp, sl = position.get('tp_price'), position.get('sl_price')
-                    close_position, close_reason = False, ""
-                    if direction == 'long':
-                        if sl and current_price <= sl: close_position, close_reason = True, "SL"
-                        elif tp and current_price >= tp: close_position, close_reason = True, "TP"
-                    elif direction == 'short':
-                        if sl and current_price >= sl: close_position, close_reason = True, "SL"
-                        elif tp and current_price <= tp: close_position, close_reason = True, "TP"
+                    position_side, order_side = direction.upper(), "SELL" if direction == 'long' else "BUY"
                     
-                    if close_position:
-                        app.logger.info(f"[MONITOR] {close_reason} hit for {symbol}. Closing {direction} position.")
-                        position_side = direction.upper(); order_side = "SELL" if direction == 'long' else "BUY"
+                    if (direction == 'long' and current_price <= position['sl_price']) or (direction == 'short' and current_price >= position['sl_price']):
+                        app.logger.info(f"[MONITOR] SL hit for {symbol}. Closing remaining position.")
                         res = client.place_order(symbol, order_side, position_side, quantity, leverage)
                         if res and res.get('code') == 0:
-                            app.logger.info(f"Successfully closed {symbol} position via monitor.")
                             with positions_lock, status_lock:
                                 if item_id in ACTIVE_POSITIONS: del ACTIVE_POSITIONS[item_id]
                                 BOT_STATUS[item_id] = {"message": "Waiting...", "color": "#fff", "last_close_time": time.time()}
-                        else:
-                            app.logger.error(f"Failed to close {symbol} via monitor: {res.get('msg') if res else 'Unknown error'}")
+                        continue # Skip to next symbol
 
+                    tp_levels = [
+                        {'level': 1, 'price': position.get('tp1'), 'qty': position.get('tp1_qty'), 'hit_flag': 'tp1_hit'},
+                        {'level': 2, 'price': position.get('tp2'), 'qty': position.get('tp2_qty'), 'hit_flag': 'tp2_hit'},
+                        {'level': 3, 'price': position.get('tp3'), 'qty': position.get('tp3_qty'), 'hit_flag': 'tp3_hit'}
+                    ]
+
+                    for tp in tp_levels:
+                        if not position.get(tp['hit_flag']):
+                            is_hit = (direction == 'long' and current_price >= tp['price']) or (direction == 'short' and current_price <= tp['price'])
+                            if is_hit:
+                                app.logger.info(f"[MONITOR] TP{tp['level']} hit for {symbol}. Closing partial quantity.")
+                                res = client.place_order(symbol, order_side, position_side, tp['qty'], leverage)
+                                if res and res.get('code') == 0:
+                                    app.logger.info(f"Successfully closed {tp['qty']} of {symbol} for TP{tp['level']}.")
+                                    with positions_lock:
+                                        live_pos = ACTIVE_POSITIONS.get(item_id)
+                                        if live_pos:
+                                            live_pos[tp['hit_flag']] = True
+                                            live_pos['quantity'] -= tp['qty']
+                                            if live_pos['quantity'] <= 0 or tp['level'] == 3:
+                                                del ACTIVE_POSITIONS[item_id]
+                                                with status_lock: BOT_STATUS[item_id] = {"message": "Waiting...", "color": "#fff", "last_close_time": time.time()}
+                                                app.logger.info(f"Position for {symbol} fully closed.")
+                                else:
+                                    app.logger.error(f"Failed to close partial TP for {symbol}: {res.get('msg') if res else 'Unknown error'}")
+                                break # Process only one TP per tick
         except Exception as e: 
             app.logger.error(f"Error in PnL/Monitor worker: {e}", exc_info=False)
 
 
-# --- UPGRADED Backtesting Engine (High-Resolution with S/D Logic) ---
+# --- UPGRADED Backtesting Engine (High-Resolution with S/D Logic & LIQUIDATION GUARD) ---
 def get_sub_interval(interval):
     if not interval.isnumeric(): return "60"
     interval_min = int(interval)
@@ -460,7 +472,6 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts):
         leverage = SETTINGS.get('leverage', 10)
         risk_percentage = SETTINGS.get('risk_percentage', 1.0)
         
-    # 1. Fetch Data
     app.logger.info(f"Backtest: Fetching primary {interval} candles from Bybit...")
     all_candles_raw = []
     current_start_ts = start_ts
@@ -488,21 +499,16 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts):
 
     if not all_sub_candles_raw: raise ValueError("Not enough historical data for the sub-interval.")
 
-    # 2. Pre-computation and Initialization
     main_candle_open_timestamps = {int(c[0]) for c in all_candles_raw}
     ts_to_main_candle_idx = {int(c[0]): i for i, c in enumerate(all_candles_raw)}
     sub_candles = [{'t': int(c[0]), 'o': float(c[1]), 'h': float(c[2]), 'l': float(c[3]), 'c': float(c[4])} for c in all_sub_candles_raw]
     
-    trades, equity_curve = [], [{'time': start_ts, 'equity': 10000.0}]
-    equity = 10000.0
-    open_position = None
+    trades, equity_curve, equity, open_position = [], [{'time': start_ts, 'equity': 10000.0}], 10000.0, None
 
     app.logger.info(f"Backtest: Starting simulation on {len(sub_candles)} sub-candles...")
 
-    # 3. Simulation Loop
     for sub_candle in sub_candles:
         current_ts = sub_candle['t']
-
         if open_position:
             if (open_position['direction'] == 'long' and sub_candle['l'] <= open_position['sl']) or \
                (open_position['direction'] == 'short' and sub_candle['h'] >= open_position['sl']):
@@ -512,19 +518,16 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts):
                 open_position = None
             
             if open_position:
-                tp_prices = [open_position['tp1'], open_position['tp2'], open_position['tp3']]
-                tp_qtys = [open_position['tp1_qty'], open_position['tp2_qty'], open_position['tp3_qty']]
-                tp_flags = ['tp1_hit', 'tp2_hit', 'tp3_hit']
-                for i in range(3):
-                    if not open_position.get(tp_flags[i]):
-                        if (open_position['direction'] == 'long' and sub_candle['h'] >= tp_prices[i]) or \
-                           (open_position['direction'] == 'short' and sub_candle['l'] <= tp_prices[i]):
-                            qty_to_close = tp_qtys[i]
-                            pnl = (tp_prices[i] - open_position['entry_price']) * qty_to_close if open_position['direction'] == 'long' else (open_position['entry_price'] - tp_prices[i]) * qty_to_close
+                tp_levels = [{'level': 1, 'price': open_position['tp1'], 'qty': open_position['tp1_qty'], 'flag': 'tp1_hit'}, {'level': 2, 'price': open_position['tp2'], 'qty': open_position['tp2_qty'], 'flag': 'tp2_hit'}, {'level': 3, 'price': open_position['tp3'], 'qty': open_position['tp3_qty'], 'flag': 'tp3_hit'}]
+                for tp in tp_levels:
+                    if not open_position.get(tp['flag']):
+                        if (open_position['direction'] == 'long' and sub_candle['h'] >= tp['price']) or \
+                           (open_position['direction'] == 'short' and sub_candle['l'] <= tp['price']):
+                            pnl = (tp['price'] - open_position['entry_price']) * tp['qty'] if open_position['direction'] == 'long' else (open_position['entry_price'] - tp['price']) * tp['qty']
                             equity += pnl
-                            trades.append({'exit_time': current_ts, 'direction': open_position['direction'].upper(), 'pnl': pnl, 'return_pct': (pnl / open_position['initial_margin']) * 100, 'exit_reason': f'TP{i+1}'})
-                            open_position['quantity'] -= qty_to_close
-                            open_position[tp_flags[i]] = True
+                            trades.append({'exit_time': current_ts, 'direction': open_position['direction'].upper(), 'pnl': pnl, 'return_pct': (pnl / open_position['initial_margin']) * 100, 'exit_reason': f'TP{tp["level"]}'})
+                            open_position['quantity'] -= tp['qty']
+                            open_position[tp['flag']] = True
                 if open_position.get('tp3_hit'): open_position = None
 
         if current_ts in main_candle_open_timestamps:
@@ -546,28 +549,26 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts):
                     
                     if direction and zone:
                         sl = zone['low'] * 0.999 if direction == 'long' else zone['high'] * 1.001
+                        liquidation_price = calculate_liquidation_price(entry_price, leverage, direction)
+                        if liquidation_price is not None:
+                            if direction == "long" and sl <= liquidation_price: sl = liquidation_price * 1.001
+                            elif direction == "short" and sl >= liquidation_price: sl = liquidation_price * 0.999
+
                         risk_per_unit = abs(entry_price - sl)
                         if risk_per_unit > 0:
                             tp1, tp2, tp3 = entry_price + risk_per_unit, entry_price + risk_per_unit * 2, entry_price + risk_per_unit * 3
                             if direction == 'short': tp1, tp2, tp3 = entry_price - risk_per_unit, entry_price - risk_per_unit * 2, entry_price - risk_per_unit * 3
                             total_quantity = (equity * (risk_percentage / 100)) / risk_per_unit
                             if total_quantity > 0:
-                                open_position = {
-                                    'entry_price': entry_price, 'quantity': total_quantity, 'direction': direction, 'sl': sl,
-                                    'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'tp1_qty': total_quantity * 0.33, 'tp2_qty': total_quantity * 0.33,
-                                    'tp3_qty': total_quantity - (total_quantity * 0.33 * 2), 'initial_margin': (entry_price * total_quantity) / leverage
-                                }
+                                open_position = {'entry_price': entry_price, 'quantity': total_quantity, 'direction': direction, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3, 'tp1_qty': total_quantity * 0.33, 'tp2_qty': total_quantity * 0.33, 'tp3_qty': total_quantity - (total_quantity * 0.33 * 2), 'initial_margin': (entry_price * total_quantity) / leverage if leverage > 0 else 1}
             equity_curve.append({'time': current_ts, 'equity': equity})
             
     final_equity = equity
     if open_position: final_equity += (sub_candles[-1]['c'] - open_position['entry_price']) * open_position['quantity'] if open_position['direction'] == 'long' else (open_position['entry_price'] - sub_candles[-1]['c']) * open_position['quantity']
     
-    # 4. Calculate Final Metrics
-    net_profit = final_equity - 10000.0
-    total_pnl_events = len(trades)
+    net_profit, total_pnl_events = final_equity - 10000.0, len(trades)
     win_rate = (len([t for t in trades if t['pnl'] > 0]) / total_pnl_events * 100) if total_pnl_events > 0 else 0
-    total_profit = sum(t['pnl'] for t in trades if t['pnl'] > 0)
-    total_loss = abs(sum(t['pnl'] for t in trades if t['pnl'] <= 0))
+    total_profit, total_loss = sum(t['pnl'] for t in trades if t['pnl'] > 0), abs(sum(t['pnl'] for t in trades if t['pnl'] <= 0))
     profit_factor = total_profit / total_loss if total_loss > 0 else "Infinity"
     max_dd, peak = 0, 10000.0
     for item in equity_curve:
@@ -589,7 +590,7 @@ def api_candles():
     try:
         raw_candles = get_bybit_data(symbol, interval, limit=500)
         historical = [{"t": int(c[0]), "o": float(c[1]), "h": float(c[2]), "l": float(c[3]), "c": float(c[4])} for c in raw_candles]
-        return jsonify({"candles": historical, "predicted": []}) # Prediction removed
+        return jsonify({"candles": historical, "predicted": []})
     except Exception as e: return jsonify({"error": str(e)}), 500
 
 @app.route('/api/settings', methods=['GET', 'POST'])
@@ -678,7 +679,7 @@ def manual_close():
             pos = ACTIVE_POSITIONS[item_id]
         with settings_lock: client = BingXClient(SETTINGS['bingx_api_key'], SETTINGS['secret_key'], SETTINGS['mode'] == 'demo'); lev = SETTINGS['leverage']
         position_side, order_side = pos['direction'].upper(), "SELL" if pos['direction'] == 'long' else "BUY"
-        res = client.place_order(symbol, order_side, position_side, pos['quantity'], lev)
+        res = client.place_order(symbol, order_side, position_side, pos['quantity'], lev) # Close remaining quantity
         if res and res.get('code') == 0:
             with positions_lock, status_lock:
                 if item_id in ACTIVE_POSITIONS: del ACTIVE_POSITIONS[item_id]
