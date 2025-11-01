@@ -4,11 +4,9 @@
 # THIS VERSION ADDS a log message for the analysis cycle to the terminal for better monitoring.
 # THIS VERSION REMOVES the "Trigger %" setting from the UI as it's no longer used.
 # ==============================================================================
-# THIS VERSION ADDS LIVE ORDER TESTING functionality to the UI for Long/Short open
-# and TP1/TP2/TP3 partial close execution testing.
-# THIS VERSION UPGRADES the live trading bot to use the same TP1, TP2, TP3
+# This version UPGRADES the live trading bot to use the same TP1, TP2, TP3
 # partial profit-taking system as the backtester for perfect logic synchronization.
-# THIS VERSION INTEGRATES the advanced Supply and Demand trading logic.
+# This version INTEGRATES the advanced Supply and Demand trading logic.
 # The backtester has been UPGRADED to a high-resolution engine for accuracy.
 # All other original v3.8 functions, including the UI and Bybit API, remain intact.
 # ==============================================================================
@@ -37,7 +35,6 @@ BYBIT_API_URL = "https://api.bybit.com/v5/market"
 BINGX_API_URL = "https://open-api.bingx.com"
 SETTINGS_FILE = "settings.json"
 TRADELIST_FILE = "tradelist.json"
-TEST_POSITION_FILE = "test_position.json"
 TRADE_COOLDOWN_SECONDS = 300 # 5 minutes
 MAINTENANCE_MARGIN_RATE = 0.005 # Standard rate for major pairs like BTC/ETH
 
@@ -75,7 +72,6 @@ SETTINGS = load_from_json(SETTINGS_FILE, {
     "trigger_percentage": 4.0 # Kept in backend settings for compatibility, but removed from UI
 })
 TRADE_LIST = load_from_json(TRADELIST_FILE, [])
-TEST_POSITION = load_from_json(TEST_POSITION_FILE, {})
 BOT_STATUS = {}
 ACTIVE_POSITIONS = {}
 
@@ -84,14 +80,13 @@ settings_lock = threading.Lock()
 trade_list_lock = threading.Lock()
 status_lock = threading.Lock()
 positions_lock = threading.Lock()
-test_position_lock = threading.Lock()
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-# --- HTML & JavaScript Template (FIX: Removed Trigger %, ADDED Test Buttons) ---
+# --- HTML & JavaScript Template (FIX: Removed Trigger %) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -132,9 +127,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div id="chartdiv"></div><div class="controls-wrapper"><button id="toggle-controls-btn" title="Toggle Controls">☰</button><div class="controls-overlay"><label for="symbol">Symbol:</label><input type="text" id="symbol" value="BTCUSDT"><label for="interval">Timeframe:</label><select id="interval"><option value="60">1 hour</option><option value="240">4 hours</option><option value="D">Daily</option></select><label for="num_predictions">Predictions:</label><input type="number" id="num_predictions" value="20" min="1" max="50"><button id="fetchButton">Fetch</button><button id="add-to-list-btn" class="add-btn">Add to Trade List</button><div id="status"></div></div></div>
-    <div class="panels-container"><div id="settings-panel" class="panel"><h3>Settings</h3><div id="balance-display" style="padding: 5px 0 10px; font-size: 1.1em; color: #ffeb3b; border-bottom: 1px solid #444; margin-bottom: 10px;">Balance: Loading...</div><div class="setting-item"><label for="api-key">API Key:</label><input type="text" id="api-key"></div><div class="setting-item"><label for="secret-key">Secret Key:</label><input type="password" id="secret-key"></div><div class="setting-item"><label for="mode">Mode:</label><select id="mode"><option value="demo">Demo</option><option value="live">Live</option></select></div><div class="setting-item"><label for="risk-percentage">Risk (%):</label><input type="number" id="risk-percentage" value="1.0" step="0.1" min="0.1"></div><div class="setting-item"><label for="leverage">Leverage:</label><input type="number" id="leverage" value="10"></div><button id="save-settings-btn">Save Settings</button>
-    <div id="test-controls" style="border-top: 1px solid #444; margin-top: 15px; padding-top: 10px;"><h3 style="margin-top:0;">Manual Order Testing</h3><div id="test-position-status" style="padding: 5px 0 10px; font-size: 0.9em; color: #00aaff; line-height: 1.4;">Status: No active test position.</div><div class="setting-item"><label for="test-symbol">Symbol:</label><input type="text" id="test-symbol" value="BTCUSDT"></div><div class="setting-item"><label for="test-quantity">Quantity:</label><input type="number" id="test-quantity" value="0.001" step="0.001"></div><div style="display: flex; gap: 5px; margin-bottom: 5px;"><button id="test-open-long-btn" style="flex:1; background-color:#28a745;">Open Test Long</button><button id="test-open-short-btn" style="flex:1; background-color:#dc3545;">Open Test Short</button></div><div style="display: flex; gap: 5px; margin-bottom: 5px;"><button id="test-tp1-btn" style="flex:1; background-color:#007bff;">Test TP1 (33%)</button><button id="test-tp2-btn" style="flex:1; background-color:#007bff;">Test TP2 (33%)</button><button id="test-tp3-btn" style="flex:1; background-color:#007bff;">Test TP3 (34%)</button></div><button id="test-close-all-btn" style="width:100%; background-color:#ffc107; color:#000;">Close Remaining</button></div>
-    </div><div id="tradelist-panel" class="panel"><h3>Live Trade List</h3><table id="trade-list-table"><thead><tr><th>Symbol</th><th>Timeframe</th><th>Status</th><th>PnL</th><th>Manual Control</th></tr></thead><tbody></tbody></table></div><div id="backtest-panel" class="panel"><h3>Backtest <button id="toggle-backtest-size-btn" title="Maximize">□</button></h3><div id="backtest-controls"><input type="text" id="backtest-symbol" value="BTCUSDT"><select id="backtest-interval"><option value="60">1 hour</option><option value="240">4 hours</option><option value="D">Daily</option></select><input type="date" id="backtest-start"><input type="date" id="backtest-end"><button id="run-backtest-btn">Run</button><div id="backtest-status" style="color: #ffc107;"></div></div><div id="backtest-results"><div id="equitychartdiv"></div><div id="backtest-stats"></div><div id="backtest-trades-table-container" style="height: 80px; overflow-y: auto;"><table id="backtest-trades-table" class="trade-list-table"><thead><tr><th>Exit Time</th><th>Side</th><th>PnL</th><th>Return %</th><th>Reason</th></tr></thead><tbody></tbody></table></div></div></div></div>
+    <div class="panels-container"><div id="settings-panel" class="panel"><h3>Settings</h3><div id="balance-display" style="padding: 5px 0 10px; font-size: 1.1em; color: #ffeb3b; border-bottom: 1px solid #444; margin-bottom: 10px;">Balance: Loading...</div><div class="setting-item"><label for="api-key">API Key:</label><input type="text" id="api-key"></div><div class="setting-item"><label for="secret-key">Secret Key:</label><input type="password" id="secret-key"></div><div class="setting-item"><label for="mode">Mode:</label><select id="mode"><option value="demo">Demo</option><option value="live">Live</option></select></div><div class="setting-item"><label for="risk-percentage">Risk (%):</label><input type="number" id="risk-percentage" value="1.0" step="0.1" min="0.1"></div><div class="setting-item"><label for="leverage">Leverage:</label><input type="number" id="leverage" value="10"></div><button id="save-settings-btn">Save Settings</button></div><div id="tradelist-panel" class="panel"><h3>Live Trade List</h3><table id="trade-list-table"><thead><tr><th>Symbol</th><th>Timeframe</th><th>Status</th><th>PnL</th><th>Manual Control</th></tr></thead><tbody></tbody></table></div><div id="backtest-panel" class="panel"><h3>Backtest <button id="toggle-backtest-size-btn" title="Maximize">□</button></h3><div id="backtest-controls"><input type="text" id="backtest-symbol" value="BTCUSDT"><select id="backtest-interval"><option value="60">1 hour</option><option value="240">4 hours</option><option value="D">Daily</option></select><input type="date" id="backtest-start"><input type="date" id="backtest-end"><button id="run-backtest-btn">Run</button><div id="backtest-status" style="color: #ffc107;"></div></div><div id="backtest-results"><div id="equitychartdiv"></div><div id="backtest-stats"></div><div id="backtest-trades-table-container" style="height: 80px; overflow-y: auto;"><table id="backtest-trades-table" class="trade-list-table"><thead><tr><th>Exit Time</th><th>Side</th><th>PnL</th><th>Return %</th><th>Reason</th></tr></thead><tbody></tbody></table></div></div></div></div>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     let root, chart, equityRoot;
@@ -150,13 +143,23 @@ document.addEventListener('DOMContentLoaded', function () {
     async function refreshBalance() { try { const response = await fetch('/api/balance'); if (!response.ok) { document.getElementById('balance-display').textContent = 'Balance: Error'; return; } const data = await response.json(); if (data.total_balance !== undefined) { document.getElementById('balance-display').textContent = `Balance: ${data.total_balance.toFixed(2)} USDT`; } else { document.getElementById('balance-display').textContent = `Balance: ${data.error || 'N/A'}`; } } catch (error) { document.getElementById('balance-display').textContent = 'Balance: Network Error'; } }
     let backtestRunning = false;
     async function runBacktest() { if (backtestRunning) return; backtestRunning = true; const statusEl = document.getElementById('backtest-status'); const resultsEl = document.getElementById('backtest-results'); statusEl.textContent = 'Fetching historical data...'; resultsEl.style.display = 'none'; const payload = { symbol: document.getElementById('backtest-symbol').value.toUpperCase(), interval: document.getElementById('backtest-interval').value, start_date: document.getElementById('backtest-start').value, end_date: document.getElementById('backtest-end').value, }; try { statusEl.textContent = 'Running simulation...'; const response = await fetch('/api/backtest', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) }); if (!response.ok) throw new Error((await response.json()).error); const results = await response.json(); displayBacktestResults(results); statusEl.textContent = 'Backtest complete.'; } catch (error) { statusEl.textContent = `Error: ${error.message}`; } finally { backtestRunning = false; } }
-    function displayBacktestResults(results) { document.getElementById('backtest-results').style.display = 'block'; const stats = results.metrics; const statsEl = document.getElementById('backtest-stats'); const profitFactorDisplay = typeof stats.profit_factor === 'number' ? stats.profit_factor.toFixed(2) : stats.profit_factor; statsEl.innerHTML = `<div>Net Profit: <span style="color:${stats.net_profit > 0 ? '#28a745' : '#dc3545'}">${stats.net_profit.toFixed(2)} USDT</span></div><div>Win Rate: <span>${stats.win_rate.toFixed(2)}%</span></div><div>Profit Factor: <span>${profitFactorDisplay}</span></div><div>Total Trades: <span>${stats.total_trades}</span></div><div>Avg Trade PnL: <span>${stats.avg_trade_pnl.toFixed(2)}</span></div><div>Max Drawdown: <span style="color:#dc3545">${stats.max_drawdown.toFixed(2)}%</span></div>`; const tradesTableBody = document.querySelector('#backtest-trades-table tbody'); tradesTableBody.innerHTML = ''; results.trades.forEach(trade => { const pnlColor = trade.pnl > 0 ? '#28a745' : '#dc3545'; const row = `<tr><td>${new Date(trade.exit_time).toLocaleString()}</td><td>${trade.direction}</td><td style="color:${pnlColor}">${trade.pnl.toFixed(2)}</td><td style="color:${pnlColor}">${trade.return_pct.toFixed(2)}%</td><td>${trade.exit_reason || 'N/A'}</td></tr>`; tradesTableBody.insertAdjacentHTML('afterbegin', row); }); createEquityChart(results.equity_curve); }
+    function displayBacktestResults(results) { 
+        document.getElementById('backtest-results').style.display = 'block'; 
+        const stats = results.metrics; 
+        const statsEl = document.getElementById('backtest-stats'); 
+        const profitFactorDisplay = typeof stats.profit_factor === 'number' ? stats.profit_factor.toFixed(2) : stats.profit_factor;
+        statsEl.innerHTML = `<div>Net Profit: <span style="color:${stats.net_profit > 0 ? '#28a745' : '#dc3545'}">${stats.net_profit.toFixed(2)} USDT</span></div><div>Win Rate: <span>${stats.win_rate.toFixed(2)}%</span></div><div>Profit Factor: <span>${profitFactorDisplay}</span></div><div>Total Trades: <span>${stats.total_trades}</span></div><div>Avg Trade PnL: <span>${stats.avg_trade_pnl.toFixed(2)}</span></div><div>Max Drawdown: <span style="color:#dc3545">${stats.max_drawdown.toFixed(2)}%</span></div>`; 
+        const tradesTableBody = document.querySelector('#backtest-trades-table tbody'); 
+        tradesTableBody.innerHTML = ''; 
+        results.trades.forEach(trade => { 
+            const pnlColor = trade.pnl > 0 ? '#28a745' : '#dc3545'; 
+            const row = `<tr><td>${new Date(trade.exit_time).toLocaleString()}</td><td>${trade.direction}</td><td style="color:${pnlColor}">${trade.pnl.toFixed(2)}</td><td style="color:${pnlColor}">${trade.return_pct.toFixed(2)}%</td><td>${trade.exit_reason || 'N/A'}</td></tr>`; 
+            tradesTableBody.insertAdjacentHTML('afterbegin', row); 
+        }); 
+        createEquityChart(results.equity_curve); 
+    }
     function createEquityChart(data) { if (equityRoot) equityRoot.dispose(); equityRoot = am5.Root.new("equitychartdiv"); equityRoot.setThemes([am5themes_Dark.new(equityRoot)]); let chart = equityRoot.container.children.push(am5xy.XYChart.new(root, { panX: true, wheelX: "zoomX", pinchZoomX: true, paddingLeft: 0, paddingRight: 0 })); let xAxis = chart.xAxes.push(am5xy.DateAxis.new(root, { baseInterval: { timeUnit: "day", count: 1 }, renderer: am5xy.AxisRendererX.new(root, { minGridDistance: 50 }), })); let yAxis = chart.yAxes.push(am5xy.ValueAxis.new(root, { renderer: am5xy.AxisRendererY.new(root, {}) })); let series = chart.series.push(am5xy.LineSeries.new(root, { name: "Equity", xAxis: xAxis, yAxis: yAxis, valueYField: "equity", valueXField: "time", stroke: am5.color(0x00aaff), fill: am5.color(0x00aaff), })); series.fills.template.setAll({ fillOpacity: 0.1, visible: true }); series.data.setAll(data); }
-    async function testOpenOrder(side) { const symbol = document.getElementById('test-symbol').value.toUpperCase().trim(); const quantity = parseFloat(document.getElementById('test-quantity').value); if (!symbol || !quantity || quantity <= 0) { alert('Please provide a valid symbol and a positive quantity.'); return; } if (!confirm(`Are you sure you want to open a TEST ${side.toUpperCase()} order for ${quantity} ${symbol}?`)) return; try { const response = await fetch('/api/test/open', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ symbol, side, quantity }) }); const result = await response.json(); alert(result.message || result.error); refreshTestPositionStatus(); } catch (error) { alert(`Error opening test order: ${error}`); } }
-    async function testClosePartial(portion_key) { if (!confirm(`Are you sure you want to execute ${portion_key.toUpperCase()} partial close?`)) return; try { const response = await fetch('/api/test/close_partial', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ portion_key }) }); const result = await response.json(); alert(result.message || result.error); refreshTestPositionStatus(); } catch (error) { alert(`Error with partial close: ${error}`); } }
-    async function testCloseAll() { if (!confirm(`Are you sure you want to close the entire remaining test position?`)) return; try { const response = await fetch('/api/test/close_all', { method: 'POST' }); const result = await response.json(); alert(result.message || result.error); refreshTestPositionStatus(); } catch (error) { alert(`Error closing test position: ${error}`); } }
-    async function refreshTestPositionStatus() { const statusEl = document.getElementById('test-position-status'); try { const response = await fetch('/api/test/status'); const data = await response.json(); if (data.active) { statusEl.innerHTML = `Active Test: ${data.direction.toUpperCase()} ${data.initial_quantity} ${data.symbol} <br> Entry: ${data.entry_price} | Remaining: ${data.remaining_quantity.toFixed(5)}`; statusEl.style.color = '#28a745'; } else { statusEl.innerHTML = 'Status: No active test position.'; statusEl.style.color = '#00aaff'; } } catch (e) { statusEl.innerHTML = 'Status: Error fetching status.'; statusEl.style.color = '#dc3545'; } }
-    function initialize() { loadSettings(); refreshTradeList(); refreshBalance(); setInterval(refreshTradeList, 1000); setInterval(refreshBalance, 10000); const today = new Date(); const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1); const threeMonthsAgo = new Date(today); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3); document.getElementById('backtest-end').valueAsDate = yesterday; document.getElementById('backtest-start').valueAsDate = threeMonthsAgo; document.getElementById('toggle-controls-btn').addEventListener('click', () => document.querySelector('.controls-overlay').classList.toggle('hidden')); document.getElementById('fetchButton').addEventListener('click', fetchChartData); document.getElementById('add-to-list-btn').addEventListener('click', addTradeItem); document.getElementById('save-settings-btn').addEventListener('click', saveSettings); document.getElementById('run-backtest-btn').addEventListener('click', runBacktest); document.getElementById('toggle-backtest-size-btn').addEventListener('click', (e) => { const btn = e.target; const container = document.querySelector('.panels-container'); const chartContainer = document.getElementById('chartdiv'); container.classList.toggle('is-maximized'); if (container.classList.contains('is-maximized')) { btn.textContent = '−'; btn.title = "Minimize"; chartContainer.style.height = '40px'; } else { btn.textContent = '□'; btn.title = "Maximize"; chartContainer.style.height = 'calc(100% - 250px)'; } setTimeout(() => { if (equityRoot) { equityRoot.resize(); } if (root) { root.resize(); } }, 350); }); document.getElementById('test-open-long-btn').addEventListener('click', () => testOpenOrder('long')); document.getElementById('test-open-short-btn').addEventListener('click', () => testOpenOrder('short')); document.getElementById('test-tp1-btn').addEventListener('click', () => testClosePartial('tp1')); document.getElementById('test-tp2-btn').addEventListener('click', () => testClosePartial('tp2')); document.getElementById('test-tp3-btn').addEventListener('click', () => testClosePartial('tp3')); document.getElementById('test-close-all-btn').addEventListener('click', testCloseAll); refreshTestPositionStatus(); setInterval(refreshTestPositionStatus, 5000); }
+    function initialize() { loadSettings(); refreshTradeList(); refreshBalance(); setInterval(refreshTradeList, 1000); setInterval(refreshBalance, 10000); const today = new Date(); const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1); const threeMonthsAgo = new Date(today); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3); document.getElementById('backtest-end').valueAsDate = yesterday; document.getElementById('backtest-start').valueAsDate = threeMonthsAgo; document.getElementById('toggle-controls-btn').addEventListener('click', () => document.querySelector('.controls-overlay').classList.toggle('hidden')); document.getElementById('fetchButton').addEventListener('click', fetchChartData); document.getElementById('add-to-list-btn').addEventListener('click', addTradeItem); document.getElementById('save-settings-btn').addEventListener('click', saveSettings); document.getElementById('run-backtest-btn').addEventListener('click', runBacktest); document.getElementById('toggle-backtest-size-btn').addEventListener('click', (e) => { const btn = e.target; const container = document.querySelector('.panels-container'); const chartContainer = document.getElementById('chartdiv'); container.classList.toggle('is-maximized'); if (container.classList.contains('is-maximized')) { btn.textContent = '−'; btn.title = "Minimize"; chartContainer.style.height = '40px'; } else { btn.textContent = '□'; btn.title = "Maximize"; chartContainer.style.height = 'calc(100% - 250px)'; } setTimeout(() => { if (equityRoot) { equityRoot.resize(); } if (root) { root.resize(); } }, 350); }); }
     initialize();
 });
 </script>
@@ -697,144 +700,6 @@ def handle_backtest():
     except Exception as e: 
         app.logger.error(f"Backtest error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 400
-
-# --- NEW: Test Order Execution Routes ---
-@app.route('/api/test/status')
-def test_position_status():
-    with test_position_lock:
-        if TEST_POSITION:
-            return jsonify({**TEST_POSITION, "active": True})
-        else:
-            return jsonify({"active": False})
-
-@app.route('/api/test/open', methods=['POST'])
-def test_open_order():
-    with test_position_lock:
-        if TEST_POSITION:
-            return jsonify({"error": "A test position is already active. Please close it first."}), 400
-        
-        try:
-            data = request.json
-            symbol, side, quantity = data['symbol'], data['side'], float(data['quantity'])
-
-            with settings_lock:
-                client = BingXClient(SETTINGS['bingx_api_key'], SETTINGS['bingx_secret_key'], SETTINGS['mode'] == 'demo')
-                leverage = SETTINGS['leverage']
-
-            price_data = get_bybit_ticker_data([symbol])
-            if not price_data or symbol not in price_data:
-                return jsonify({"error": f"Could not fetch current price for {symbol}"}), 400
-            current_price = price_data[symbol]
-            
-            position_side, order_side = ("LONG", "BUY") if side == 'long' else ("SHORT", "SELL")
-            
-            res = client.place_order(symbol, order_side, position_side, quantity, leverage)
-            
-            if res and res.get('code') == 0:
-                global TEST_POSITION
-                TEST_POSITION = {
-                    "symbol": symbol,
-                    "direction": side,
-                    "initial_quantity": quantity,
-                    "remaining_quantity": quantity,
-                    "entry_price": current_price,
-                    "tp1_closed": False,
-                    "tp2_closed": False,
-                    "tp3_closed": False
-                }
-                save_to_json(TEST_POSITION_FILE, TEST_POSITION)
-                return jsonify({"message": f"Successfully opened test {side} order for {quantity} {symbol} at market."})
-            else:
-                return jsonify({"error": f"Failed to place order: {res.get('msg') if res else 'Unknown API error'}"}), 500
-
-        except Exception as e:
-            app.logger.error(f"Test open order error: {e}", exc_info=True)
-            return jsonify({"error": str(e)}), 500
-
-@app.route('/api/test/close_partial', methods=['POST'])
-def test_close_partial():
-    with test_position_lock:
-        if not TEST_POSITION:
-            return jsonify({"error": "No active test position to close."}), 400
-
-        try:
-            data = request.json
-            portion_key = data.get('portion_key') # 'tp1', 'tp2', 'tp3'
-            
-            if TEST_POSITION.get(f"{portion_key}_closed"):
-                return jsonify({"error": f"{portion_key.upper()} has already been closed for this position."}), 400
-
-            portions = {'tp1': 0.33, 'tp2': 0.33, 'tp3': 0.34}
-            
-            if portion_key not in portions:
-                return jsonify({"error": "Invalid portion key provided."}), 400
-
-            initial_qty = TEST_POSITION['initial_quantity']
-            qty_to_close = initial_qty * portions[portion_key]
-
-            if portion_key == 'tp3': qty_to_close = TEST_POSITION['remaining_quantity']
-            if qty_to_close <= 0 or qty_to_close > TEST_POSITION['remaining_quantity'] + (initial_qty * 0.001): # Add tolerance
-                 return jsonify({"error": f"Invalid quantity to close ({qty_to_close:.5f}). Remaining: {TEST_POSITION['remaining_quantity']:.5f}"}), 400
-            
-            with settings_lock:
-                client = BingXClient(SETTINGS['bingx_api_key'], SETTINGS['bingx_secret_key'], SETTINGS['mode'] == 'demo')
-                leverage = SETTINGS['leverage']
-
-            symbol, direction = TEST_POSITION['symbol'], TEST_POSITION['direction']
-            position_side, order_side = ("LONG", "SELL") if direction == 'long' else ("SHORT", "BUY")
-            res = client.place_order(symbol, order_side, position_side, qty_to_close, leverage)
-
-            if res and res.get('code') == 0:
-                global TEST_POSITION
-                TEST_POSITION['remaining_quantity'] -= qty_to_close
-                TEST_POSITION[f"{portion_key}_closed"] = True
-                
-                if TEST_POSITION['remaining_quantity'] < (initial_qty * 0.01):
-                     TEST_POSITION = {}
-                     save_to_json(TEST_POSITION_FILE, {})
-                     return jsonify({"message": f"Successfully closed {portion_key.upper()} ({qty_to_close:.5f} {symbol}). Position fully closed."})
-                else:
-                    save_to_json(TEST_POSITION_FILE, TEST_POSITION)
-                    return jsonify({"message": f"Successfully closed {portion_key.upper()} ({qty_to_close:.5f} {symbol})."})
-            else:
-                 return jsonify({"error": f"Failed to place partial close order: {res.get('msg') if res else 'Unknown API error'}"}), 500
-
-        except Exception as e:
-            app.logger.error(f"Test partial close error: {e}", exc_info=True)
-            return jsonify({"error": str(e)}), 500
-
-@app.route('/api/test/close_all', methods=['POST'])
-def test_close_all():
-    with test_position_lock:
-        if not TEST_POSITION:
-            return jsonify({"message": "No active test position to close."})
-        
-        try:
-            with settings_lock:
-                client = BingXClient(SETTINGS['bingx_api_key'], SETTINGS['bingx_secret_key'], SETTINGS['mode'] == 'demo')
-                leverage = SETTINGS['leverage']
-
-            symbol, direction, remaining_qty = TEST_POSITION['symbol'], TEST_POSITION['direction'], TEST_POSITION['remaining_quantity']
-            
-            if remaining_qty <= 0:
-                 global TEST_POSITION
-                 TEST_POSITION = {}
-                 save_to_json(TEST_POSITION_FILE, {})
-                 return jsonify({"message": "No remaining quantity to close. Position cleared."})
-
-            position_side, order_side = ("LONG", "SELL") if direction == 'long' else ("SHORT", "BUY")
-            res = client.place_order(symbol, order_side, position_side, remaining_qty, leverage)
-
-            if res and res.get('code') == 0:
-                TEST_POSITION = {}
-                save_to_json(TEST_POSITION_FILE, {})
-                return jsonify({"message": f"Successfully placed order to close remaining {remaining_qty:.5f} {symbol}."})
-            else:
-                return jsonify({"error": f"Failed to place close order: {res.get('msg') if res else 'Unknown API error'}"}), 500
-
-        except Exception as e:
-            app.logger.error(f"Test close all error: {e}", exc_info=True)
-            return jsonify({"error": str(e)}), 500
 
 # --- Main Execution ---
 if __name__ == '__main__':
