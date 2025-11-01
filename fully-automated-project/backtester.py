@@ -1,29 +1,17 @@
 # ==============================================================================
-# Exora Quant AI - v3.9.2 (Binance & Backtest UI with Spot Mode & Reversal)
+# Exora Quant AI - v3.9.3 (MODIFIED by AI Assistant)
 # ==============================================================================
-# This version is MODIFIED to use a Supply and Demand trading logic.
-# It analyzes the last 500 candles to identify zones and trades on them.
-# The backtester implements TP1, TP2, and TP3 for partial profit-taking.
-# The live trading bot uses the same S/D logic with a single TP target.
-# ==============================================================================
-# THIS VERSION FIXES a JSON serialization error for 'Infinity' in the backtest profit factor calculation.
-# ==============================================================================
-# This version is MODIFIED to fetch all price and candle data from the
-# Binance PERPETUAL (fapi) market instead of Bybit. This aligns the data
-# source with a different major exchange.
-# THIS VERSION MODIFIES the web UI to exclusively display the backtesting
-# panel, hiding live trading, charting, and settings controls.
-# THIS VERSION adds a configurable "Trigger Percentage" to the web UI.
-# THIS VERSION IS MODIFIED to use percentage-based risk and display total balance.
-# THIS VERSION ADDS a liquidation detection feature to adjust SL and prevent liquidation.
-# THIS VERSION MODIFIES the backtest engine to use high-resolution data for realistic volatility simulation.
-# THIS VERSION ADDS user-configurable parameters (Leverage, Equity, Risk, Trigger) to the backtest UI.
-# THIS VERSION RE-ENGINEERS the backtest to loop on sub-interval data for high-precision entries and exits.
-# THIS VERSION ADDS a DCA/regular investment feature to the backtesting engine.
-# THIS VERSION ADDS A "SPOT MODE" to the backtesting engine for unleveraged, buy-only strategies.
-# THIS VERSION ADDS a reversal detection feature to close open positions on new contrary signals.
-# ==============================================================================
-# BACKTESTER LOGIC for 'spot' mode has been updated to match Exora Quant Spot Edition v1.2 logic.
+# This version is MODIFIED to fix a backtesting issue where multiple take-profit
+# levels could be triggered on a single candle. The logic now processes only
+# the first TP level reached per candle for a more realistic simulation.
+#
+# This version also ENHANCES the backtest report to include trade opening
+# information (open time, entry price) alongside the exit details.
+#
+# Additionally, the final backtest metrics (Total Trades, Win Rate, Avg PnL)
+# have been REFINED to count a full trade cycle (one entry to final exit)
+
+# as a single trade, even if it involves multiple partial take-profits.
 # ==============================================================================
 
 import time
@@ -108,14 +96,14 @@ app = Flask(__name__)
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-# --- HTML & JavaScript Template (FIXED to handle "Infinity" string) ---
+# --- HTML & JavaScript Template (ENHANCED for detailed trade view) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Exora Quant AI v3.9.2 (Supply/Demand Logic)</title>
+    <title>Exora Quant AI v3.9.3 (Supply/Demand Logic)</title>
     <style>
         html, body { width: 100%; height: 100%; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #000; color: #eee; font-size: 14px; }
         
@@ -139,7 +127,7 @@ HTML_TEMPLATE = """
         .panel h3 { margin-top: 0; border-bottom: 1px solid #444; padding-bottom: 8px; color: #00aaff; }
         #backtest-panel {
             width: 100%;
-            max-width: 1000px;
+            max-width: 1200px; /* Increased width for more columns */
             height: calc(100vh - 40px);
             display: flex;
             flex-direction: column;
@@ -163,6 +151,7 @@ HTML_TEMPLATE = """
         #backtest-trades-table-container { flex-grow: 1; height: 200px; overflow-y: auto; border: 1px solid #333; border-radius: 5px; }
         #backtest-trades-table { width: 100%; border-collapse: collapse; font-size: 11px; }
         #backtest-trades-table th, #backtest-trades-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #2a2a2a; }
+        #backtest-trades-table th { position: sticky; top: 0; background-color: #2a2a2a; }
     </style>
     <script src="https://cdn.amcharts.com/lib/5/index.js"></script><script src="https://cdn.amcharts.com/lib/5/xy.js"></script><script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script><script src="https://cdn.amcharts.com/lib/5/themes/Dark.js"></script>
 </head>
@@ -198,7 +187,8 @@ HTML_TEMPLATE = """
                 <div id="backtest-stats"></div>
                 <div id="backtest-trades-table-container">
                     <table id="backtest-trades-table">
-                        <thead><tr><th>Exit Time</th><th>Side</th><th>PnL</th><th>Return %</th><th>Reason</th></tr></thead>
+                        <!-- ENHANCEMENT: Added columns for Open Time, Entry, and Exit prices -->
+                        <thead><tr><th>Open Time</th><th>Exit Time</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Return %</th><th>Reason</th></tr></thead>
                         <tbody></tbody>
                     </table>
                 </div>
@@ -210,6 +200,13 @@ document.addEventListener('DOMContentLoaded', function () {
     let equityRoot;
     let backtestRunning = false;
     
+    // Helper to format price with appropriate precision
+    function formatPrice(price) {
+        if (price > 100) return price.toFixed(2);
+        if (price > 1) return price.toFixed(4);
+        return price.toFixed(6);
+    }
+
     async function runBacktest() {
         if (backtestRunning) return;
         backtestRunning = true;
@@ -259,7 +256,6 @@ document.addEventListener('DOMContentLoaded', function () {
         const stats = results.metrics;
         const statsEl = document.getElementById('backtest-stats');
         
-        // --- FIX: Handle string or number for profit_factor ---
         const profitFactorDisplay = typeof stats.profit_factor === 'number' 
             ? stats.profit_factor.toFixed(2) 
             : stats.profit_factor;
@@ -270,7 +266,17 @@ document.addEventListener('DOMContentLoaded', function () {
         tradesTableBody.innerHTML = '';
         results.trades.forEach(trade => {
             const pnlColor = trade.pnl > 0 ? '#28a745' : '#dc3545';
-            const row = `<tr><td>${new Date(trade.exit_time).toLocaleString()}</td><td>${trade.direction}</td><td style="color:${pnlColor}">${trade.pnl.toFixed(2)}</td><td style="color:${pnlColor}">${trade.return_pct.toFixed(2)}%</td><td>${trade.exit_reason || 'N/A'}</td></tr>`;
+            // ENHANCEMENT: Populate the new columns in the trade log table
+            const row = `<tr>
+                <td>${new Date(trade.entry_time).toLocaleString()}</td>
+                <td>${new Date(trade.exit_time).toLocaleString()}</td>
+                <td>${trade.direction}</td>
+                <td>${formatPrice(trade.entry_price)}</td>
+                <td>${formatPrice(trade.exit_price)}</td>
+                <td style="color:${pnlColor}">${trade.pnl.toFixed(2)}</td>
+                <td style="color:${pnlColor}">${trade.return_pct.toFixed(2)}%</td>
+                <td>${trade.exit_reason || 'N/A'}</td>
+            </tr>`;
             tradesTableBody.insertAdjacentHTML('afterbegin', row);
         });
         createEquityChart(results.equity_curve);
@@ -706,12 +712,18 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts, leverage, starti
 
         # --- Position Management (Exit Logic) ---
         if open_position:
+            exit_price_sl = open_position['sl']
             # Check for SL first
-            if (open_position['direction'] == 'long' and sub_candle['l'] <= open_position['sl']) or \
-               (open_position['direction'] == 'short' and sub_candle['h'] >= open_position['sl']):
-                pnl = (open_position['sl'] - open_position['entry_price']) * open_position['quantity'] if open_position['direction'] == 'long' else (open_position['entry_price'] - open_position['sl']) * open_position['quantity']
+            if (open_position['direction'] == 'long' and sub_candle['l'] <= exit_price_sl) or \
+               (open_position['direction'] == 'short' and sub_candle['h'] >= exit_price_sl):
+                pnl = (exit_price_sl - open_position['entry_price']) * open_position['quantity'] if open_position['direction'] == 'long' else (open_position['entry_price'] - exit_price_sl) * open_position['quantity']
                 equity += pnl
-                trades.append({'exit_time': current_ts, 'direction': open_position['direction'].upper(), 'pnl': pnl, 'return_pct': (pnl / open_position['initial_margin']) * 100, 'exit_reason': 'SL'})
+                trades.append({
+                    'trade_id': open_position['trade_id'], 'entry_time': open_position['entry_time'],
+                    'entry_price': open_position['entry_price'], 'exit_price': exit_price_sl,
+                    'exit_time': current_ts, 'direction': open_position['direction'].upper(), 'pnl': pnl,
+                    'return_pct': (pnl / open_position['initial_margin']) * 100, 'exit_reason': 'SL'
+                })
                 open_position = None
             
             # Check for TPs if still open
@@ -722,15 +734,23 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts, leverage, starti
 
                 for i in range(3):
                     if not open_position.get(tp_flags[i]):
-                        is_hit = (open_position['direction'] == 'long' and sub_candle['h'] >= tp_prices[i]) or \
-                                 (open_position['direction'] == 'short' and sub_candle['l'] <= tp_prices[i])
+                        exit_price_tp = tp_prices[i]
+                        is_hit = (open_position['direction'] == 'long' and sub_candle['h'] >= exit_price_tp) or \
+                                 (open_position['direction'] == 'short' and sub_candle['l'] <= exit_price_tp)
                         if is_hit:
                             qty_to_close = tp_qtys[i]
-                            pnl = (tp_prices[i] - open_position['entry_price']) * qty_to_close if open_position['direction'] == 'long' else (open_position['entry_price'] - tp_prices[i]) * qty_to_close
+                            pnl = (exit_price_tp - open_position['entry_price']) * qty_to_close if open_position['direction'] == 'long' else (open_position['entry_price'] - exit_price_tp) * qty_to_close
                             equity += pnl
-                            trades.append({'exit_time': current_ts, 'direction': open_position['direction'].upper(), 'pnl': pnl, 'return_pct': (pnl / open_position['initial_margin']) * 100, 'exit_reason': f'TP{i+1}'})
+                            trades.append({
+                                'trade_id': open_position['trade_id'], 'entry_time': open_position['entry_time'],
+                                'entry_price': open_position['entry_price'], 'exit_price': exit_price_tp,
+                                'exit_time': current_ts, 'direction': open_position['direction'].upper(), 'pnl': pnl,
+                                'return_pct': (pnl / open_position['initial_margin']) * 100, 'exit_reason': f'TP{i+1}'
+                            })
                             open_position['quantity'] -= qty_to_close
                             open_position[tp_flags[i]] = True
+                            # FIX: Break after one TP is hit to prevent multiple TPs in the same candle
+                            break
                 
                 if open_position.get('tp3_hit'):
                     open_position = None
@@ -749,7 +769,12 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts, leverage, starti
                         exit_price = sub_candle['o']
                         pnl = (exit_price - open_position['entry_price']) * open_position['quantity'] if open_position['direction'] == 'long' else (open_position['entry_price'] - exit_price) * open_position['quantity']
                         equity += pnl
-                        trades.append({'exit_time': current_ts, 'direction': open_position['direction'].upper(), 'pnl': pnl, 'return_pct': (pnl / open_position['initial_margin']) * 100, 'exit_reason': 'Reversal'})
+                        trades.append({
+                            'trade_id': open_position['trade_id'], 'entry_time': open_position['entry_time'],
+                            'entry_price': open_position['entry_price'], 'exit_price': exit_price,
+                            'exit_time': current_ts, 'direction': open_position['direction'].upper(), 'pnl': pnl,
+                            'return_pct': (pnl / open_position['initial_margin']) * 100, 'exit_reason': 'Reversal'
+                        })
                         open_position = None
                 
                 # Entry check if no position is open
@@ -784,7 +809,9 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts, leverage, starti
                                 initial_margin = invest_amount
                             
                             if total_quantity > 0:
+                                # ENHANCEMENT: Add trade_id and entry_time to the position object
                                 open_position = {
+                                    'trade_id': current_ts, 'entry_time': current_ts,
                                     'entry_price': entry_price, 'quantity': total_quantity, 'direction': direction,
                                     'sl': sl, 'tp1': tp1, 'tp2': tp2, 'tp3': tp3,
                                     'tp1_qty': total_quantity * 0.33, 'tp2_qty': total_quantity * 0.33,
@@ -799,15 +826,30 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts, leverage, starti
         final_price = sub_candles[-1]['c']
         pnl = (final_price - open_position['entry_price']) * open_position['quantity'] if open_position['direction'] == 'long' else (open_position['entry_price'] - final_price) * open_position['quantity']
         final_equity += pnl
+        trades.append({
+            'trade_id': open_position['trade_id'], 'entry_time': open_position['entry_time'],
+            'entry_price': open_position['entry_price'], 'exit_price': final_price,
+            'exit_time': sub_candles[-1]['t'], 'direction': open_position['direction'].upper(), 'pnl': pnl,
+            'return_pct': (pnl / open_position['initial_margin']) * 100, 'exit_reason': 'End of Backtest'
+        })
 
-    # 4. Calculate Final Metrics
+    # 4. Calculate Final Metrics (REFINED to group partials into single trades)
     net_profit = final_equity - starting_equity - total_dca_added
-    total_pnl_events = len(trades)
-    win_rate = (len([t for t in trades if t['pnl'] > 0]) / total_pnl_events * 100) if total_pnl_events > 0 else 0
+    
+    # Group PnL events by their unique trade ID
+    trade_groups = {}
+    for trade in trades:
+        tid = trade['trade_id']
+        if tid not in trade_groups:
+            trade_groups[tid] = {'pnl': 0}
+        trade_groups[tid]['pnl'] += trade['pnl']
+
+    total_trades_grouped = len(trade_groups)
+    wins = sum(1 for trade in trade_groups.values() if trade['pnl'] > 0)
+    win_rate = (wins / total_trades_grouped * 100) if total_trades_grouped > 0 else 0
+    
     total_profit = sum(t['pnl'] for t in trades if t['pnl'] > 0)
     total_loss = abs(sum(t['pnl'] for t in trades if t['pnl'] <= 0))
-    
-    # --- FIX: Handle profit factor calculation for JSON compatibility ---
     profit_factor = total_profit / total_loss if total_loss > 0 else "Infinity"
 
     max_dd, peak = 0, starting_equity
@@ -819,11 +861,11 @@ def run_backtest_simulation(symbol, interval, start_ts, end_ts, leverage, starti
     return {
         "metrics": {
             "net_profit": net_profit, 
-            "total_trades": total_pnl_events, # Note: this is PnL events (partials count as trades)
-            "win_rate": win_rate, 
+            "total_trades": total_trades_grouped, # Use grouped trade count
+            "win_rate": win_rate, # Use grouped win rate
             "profit_factor": profit_factor, 
             "max_drawdown": max_dd * 100, 
-            "avg_trade_pnl": (net_profit / total_pnl_events) if total_pnl_events > 0 else 0
+            "avg_trade_pnl": (net_profit / total_trades_grouped) if total_trades_grouped > 0 else 0 # Use grouped trade count
         }, 
         "trades": trades, 
         "equity_curve": equity_curve
